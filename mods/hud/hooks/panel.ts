@@ -1,7 +1,7 @@
 // The HUD as plain data: one line per part, a label on the left and its value
 // flush right, a gauge between them where there is one. Says what each line
 // holds, its tones, and which lines leave first when there is no room. No `$`.
-import type { HudActivity, HudCache, HudCompact, HudLimit, HudModel, HudRepo, HudUsage } from '../types'
+import type { HudActivity, HudCache, HudCompact, HudCompactRun, HudLimit, HudModel, HudRepo, HudUsage } from '../types'
 
 /** What a span means; PALETTE turns it into a color. */
 export type Tone = 'label' | 'value' | 'dim' | 'model' | 'project' | 'clean' | 'dirty' | 'ok' | 'warn' | 'crit' | 'cache' | 'cost' | 'busy'
@@ -31,6 +31,8 @@ export type View = {
   usage: HudUsage
   model: HudModel
   compact: HudCompact
+  /** A /compact queued or running; absent, none. */
+  compactRun?: HudCompactRun
   cache: HudCache
   activity: HudActivity
   now: number
@@ -134,29 +136,38 @@ function projectLines(project: string | null, repo: HudRepo): Line[] {
   return lines
 }
 
-function contextLines(usage: HudUsage, compact: HudCompact): Line[] {
+/**
+ * How far auto-compaction is: `in 84k` once the context is measured, `at 160k`
+ * before (right after a compaction), `auto off`, or `–` until the threshold is
+ * read; `compacting…` while one runs, `queued` while the HUD's waits its turn.
+ */
+function compactValue(usage: HudUsage, compact: HudCompact, level: Level, run: HudCompactRun): Span[] {
+  if (run === 'running') return [s('compacting…', 'warn', true)]
+  if (run === 'queued') return [s('queued', 'warn', true), s(' · runs when idle', 'dim')]
+  if (compact === null) return [s('–', 'dim')]
+  if (compact.at === null) return [s('auto off', 'dim')]
+  if (usage.tokens === null) return [s('at ', 'dim'), s(tokens(compact.at), 'value')]
+  return [s('in ', 'dim'), s(tokens(Math.max(0, compact.at - usage.tokens)), level === 'ok' ? 'value' : level)]
+}
+
+/** Context, and the compact line: it carries the compact control, so it shows whenever the window is known. */
+function contextLines(usage: HudUsage, compact: HudCompact, run: HudCompactRun): Line[] {
   if (usage.window <= 0) return []
-  if (usage.tokens === null) {
-    return [{ key: 'context', label: 'CONTEXT', gauge: { percent: 0, tone: 'ok' }, value: [s(`–/${tokens(usage.window)}`, 'dim')], rank: KEEP }]
-  }
-  const percent = usage.percent ?? Math.round((usage.tokens / usage.window) * 100)
-  const level = levelAt(percent, 70, 85)
-  const lines: Line[] = [
-    {
-      key: 'context',
-      label: 'CONTEXT',
-      gauge: { percent, tone: level },
-      value: [s(`${percent}%`, level, level !== 'ok'), s(` ${tokens(usage.tokens)}/${tokens(usage.window)}`, 'dim')],
-      rank: KEEP,
-      level,
-    },
-  ]
-  if (compact?.at) {
-    const left = tokens(Math.max(0, compact.at - usage.tokens))
-    const tone: Tone = level === 'ok' ? 'value' : level
-    lines.push({ key: 'compact', label: 'COMPACT', value: [s('in ', 'dim'), s(left, tone)], rank: RANK.compact, action: 'compact' })
-  }
-  return lines
+  const percent = usage.tokens === null ? null : (usage.percent ?? Math.round((usage.tokens / usage.window) * 100))
+  const level = percent === null ? 'ok' : levelAt(percent, 70, 85)
+  const context: Line =
+    usage.tokens === null || percent === null
+      ? { key: 'context', label: 'CONTEXT', gauge: { percent: 0, tone: 'ok' }, value: [s(`–/${tokens(usage.window)}`, 'dim')], rank: KEEP }
+      : {
+          key: 'context',
+          label: 'CONTEXT',
+          gauge: { percent, tone: level },
+          value: [s(`${percent}%`, level, level !== 'ok'), s(` ${tokens(usage.tokens)}/${tokens(usage.window)}`, 'dim')],
+          rank: KEEP,
+          level,
+        }
+  const value = compactValue(usage, compact, level, run)
+  return [context, { key: 'compact', label: 'COMPACT', value, rank: RANK.compact, action: 'compact' }]
 }
 
 function limitLine(limit: HudLimit, now: number, isFirst: boolean): Line {
@@ -211,7 +222,7 @@ export function buildPanel(v: View): Line[] {
   return [
     modelLine(v.model),
     ...projectLines(v.project, v.repo),
-    ...contextLines(v.usage, v.compact),
+    ...contextLines(v.usage, v.compact, v.compactRun ?? null),
     ...planLines(v.usage, v.now),
     cacheLine(v.cache, v.now),
     costLine(v.usage),

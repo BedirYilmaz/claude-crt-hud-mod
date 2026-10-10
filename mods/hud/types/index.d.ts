@@ -51,8 +51,44 @@ export type HudCache = {
 /** Tools running now by tool_use_id, and the subagents in flight. */
 export type HudActivity = { tools: Record<string, string>; agents: number }
 
+/** A /compact the HUD asked for, waiting for the session to go idle, or any compaction of the conversation running now. */
+export type HudCompactRun = 'queued' | 'running' | null
+
 /** Alert thresholds already toasted, per gauge (`context`, `five_hour`, ...). */
 export type HudFired = Record<string, number[]>
+
+/** A control in the CRT screen's header: where it spans across, in the SVG markup's pixels. */
+export type HudHitTarget = { key: string; left: number; right: number }
+
+/** What the click layer over the header (hooks/hit.tsx) is handed: the markup's width, the rows it covers, and the controls. */
+export type HudHitProps = { width: number; rows: number; targets: HudHitTarget[] }
+
+/** One pointer event as the surface reported it to the click layer, and the control under it. */
+export type HudHitPointer = {
+  type: string
+  x: number
+  y: number
+  fine: { x: number; y: number } | null
+  button: string | null
+  target: string | null
+}
+
+/**
+ * What the click layer posts: its region in cells and the moves it has seen,
+ * with the pointer event (and the press, when it hit a control) if there was one.
+ * Every post also carries how many presses the layer has made and the last
+ * one's control: the surface keeps one post per frame, so a press whose post
+ * the up after it replaced still arrives.
+ */
+export type HudHitMessage = {
+  columns: number
+  rows: number
+  moves: number
+  presses: number
+  pressed: string | null
+  pointer?: HudHitPointer
+  press?: string
+}
 
 declare module 'claude-code' {
   interface PluginState {
@@ -76,6 +112,10 @@ declare module 'claude-code' {
       fired: HudFired
       /** When compact was pressed once (ms); a second press within 5 s runs /compact. */
       compactArm: number | null
+      /** A /compact queued by the HUD, or a compaction running: compact presses wait for it. */
+      compactRun: HudCompactRun
+      /** Hidden by its hide control for this session; `/hud` shows it again. */
+      isHidden: boolean
     }
   }
 }

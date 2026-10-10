@@ -8,9 +8,18 @@
 import { atom, read, update } from 'claude-code'
 import type { Elements, Register, RenderElement, SessionContextUsage, SessionCost, SessionRateLimit, Timer } from 'claude-code'
 
-import type { HudCache, HudPrefs, HudRepo, HudUsage } from '../types'
+import type { HudCache, HudCompactRun, HudHitMessage, HudHitProps, HudPrefs, HudRepo, HudUsage } from '../types'
 import { alertsFor } from './alerts.js'
-import { baseName, lastCacheTtl, parseGitStatus, prefsFrom, runHudCommand } from './parse.js'
+import {
+  type HudProbe,
+  baseName,
+  describePointer,
+  describeProbe,
+  lastCacheTtl,
+  parseGitStatus,
+  prefsFrom,
+  runHudCommand,
+} from './parse.js'
 import { crtScreen } from './crt.js'
 import { type Line, PALETTE, TTL_MS, buildPanel, fitPanel, panelText, toolName } from './panel.js'
 
@@ -29,9 +38,13 @@ const activity = atom({ plugin: 'hud', key: 'activity' } as const, { tools: {}, 
 const tick = atom({ plugin: 'hud', key: 'tick' } as const, 0)
 const fired = atom({ plugin: 'hud', key: 'fired' } as const, {})
 const compactArm = atom({ plugin: 'hud', key: 'compactArm' } as const, null)
+const compactRun = atom({ plugin: 'hud', key: 'compactRun' } as const, null)
+const isHidden = atom({ plugin: 'hud', key: 'isHidden' } as const, false)
 
 const STORE_PREFS = 'prefs'
 const STORE_TTL = 'ttl'
+/** What the click layer has reported (`/hud debug`), kept while the in-screen controls are on trial. */
+const STORE_DEBUG = 'debug'
 
 /** git runs at most this often; changes inside the gap are picked up at its end. */
 const GIT_GAP_MS = 5_000
@@ -50,9 +63,27 @@ const LIVE_AGENT = new Set(['pending', 'running', 'waiting'])
 
 /** A first press on compact arms it; a second within this long runs /compact. */
 const ARM_MS = 5_000
-/** The terminal panel's widest, and its label column. */
-const PANEL_COLUMNS = 64
+/** A second press sooner than this is a double-click, not a confirmation. */
+const SAME_CLICK_MS = 400
+/** Pointer events and faults kept for `/hud debug`. */
+const PROBE_LOG = 12
+/**
+ * Rows the click layer covers: the CRT's header, where its controls are. The
+ * desktop sizes the region to what hit.tsx draws, so it draws this many; one
+ * row reached only the top of the controls.
+ */
+const HIT_ROWS = 2
+/** The terminal panel's narrowest, and its label column. */
+const MIN_COLUMNS = 32
 const LABEL_COLUMNS = 9
+/**
+ * A desktop cell (its code font's advance) in CSS pixels, a little over, so the
+ * screen comes out at least as wide as the band: the desktop scales a wider
+ * one down to the slot, and the engine's five reserved columns are added back.
+ */
+const DESKTOP_CELL_PX = 8
+const ENGINE_COLUMNS = 5
+const MIN_SCREEN_PX = 380
 /** Lines drawn where the site gives no height. */
 const DEFAULT_LINES = 12
 
@@ -70,6 +101,10 @@ type Host = {
   status: (cwd: string) => Promise<string | null>
   setRepo: (value: HudRepo) => Promise<void>
   setProject: (name: string) => Promise<void>
+  /** A press on compact: arms it, or runs /compact when armed. */
+  pressCompact: () => Promise<void>
+  /** A press on hide: hidden for this session. */
+  hide: () => Promise<void>
 }
 
 function usageOf(u: { context: SessionContextUsage; rateLimits: readonly SessionRateLimit[]; cost?: SessionCost }): HudUsage {
@@ -93,9 +128,13 @@ const chars = (text: string) => [...text].length
  * The panel on the terminal: a dark box, labels left, values flush right, gauges
  * aligned between them, every other line a shade lighter like a scanline.
  */
-function drawPanel(ui: TerminalUi, lines: readonly Line[], o: { columns: number; isWorking: boolean; indent: number; compact: RenderElement | null }): RenderElement {
+function drawPanel(
+  ui: TerminalUi,
+  lines: readonly Line[],
+  o: { columns: number; isWorking: boolean; run: HudCompactRun; indent: number; compact: RenderElement; hide: RenderElement },
+): RenderElement {
   const { Box, Text } = ui
-  const width = Math.max(32, Math.min(PANEL_COLUMNS, o.columns - o.indent))
+  const width = Math.max(MIN_COLUMNS, o.columns - o.indent)
   const inner = width - 4
   const valueColumns = Math.max(0, ...lines.filter(l => l.gauge).map(l => chars(l.value.map(x => x.text).join(''))))
   const gaugeColumns = inner - LABEL_COLUMNS - 1 - valueColumns
@@ -105,14 +144,19 @@ function drawPanel(ui: TerminalUi, lines: readonly Line[], o: { columns: number;
         <Text color={PALETTE.label} bold>
           ▌CLAUDE HUD
         </Text>
-        <Text color={o.isWorking ? PALETTE.warn : PALETTE.dim}>{o.isWorking ? '● WORKING' : '○ IDLE'}</Text>
+        <Box flexDirection="row" columnGap={2}>
+          <Text color={o.run !== null || o.isWorking ? PALETTE.warn : PALETTE.dim}>
+            {o.run === 'running' ? '◌ COMPACTING' : o.run === 'queued' ? '◌ COMPACT QUEUED' : o.isWorking ? '● WORKING' : '○ IDLE'}
+          </Text>
+          {o.hide}
+        </Box>
       </Box>
       {lines.map((line, i) => {
         const filled = line.gauge ? Math.min(gaugeColumns, Math.max(0, Math.round((line.gauge.percent / 100) * gaugeColumns))) : 0
         return (
           <Box key={`row-${line.key}`} flexDirection="row" backgroundColor={i % 2 ? PALETTE.scan : PALETTE.bg}>
             <Box width={LABEL_COLUMNS} flexShrink={0}>
-              <Text color={PALETTE.label}>{line.label}</Text>
+              {line.action === 'compact' ? o.compact : <Text color={PALETTE.label}>{line.label}</Text>}
             </Box>
             {line.gauge && gaugeColumns >= 6 ? (
               <Box width={gaugeColumns} flexShrink={0}>
@@ -126,7 +170,6 @@ function drawPanel(ui: TerminalUi, lines: readonly Line[], o: { columns: number;
                   {x.text}
                 </Text>
               ))}
-              {line.action === 'compact' ? o.compact : null}
             </Box>
           </Box>
         )
@@ -142,6 +185,11 @@ export const register: Register = on => {
   const git = { isRunning: false, isQueued: false, lastAt: 0, timer: undefined as Timer | undefined }
   let projectName: { cwd: string; name: string } | undefined
   let ttlScans = 0
+  // What the click layer over the desktop's screen reported, and whether the engine said it failed.
+  const probe: HudProbe = { screen: null, layer: null, events: [], faults: [] }
+  let isLayerBroken = false
+  /** The layer's press count acted on; null until its first post, which only sets it. */
+  let seenPresses: number | null = null
 
   /** One git pass: the branch and dirty count, and the project's name, rewritten each time. */
   async function gitPass(h: Host): Promise<void> {
@@ -211,7 +259,37 @@ export const register: Register = on => {
       },
       setRepo: async value => void (await update($, repo, () => value)),
       setProject: async name => void (await update($, project, () => name)),
+      pressCompact: async () => {
+        const at = await $.clock.now()
+        // One compaction at a time: a press while one is queued or running would queue another.
+        const run = await read($, compactRun)
+        if (run !== null) {
+          await update($, compactArm, () => null)
+          $.ui.toast(run === 'running' ? 'Already compacting.' : '/compact is queued: it runs when Claude is idle.')
+          return
+        }
+        const was = await read($, compactArm)
+        if (was !== null && at - was < SAME_CLICK_MS) return
+        if (was !== null && at - was < ARM_MS) {
+          await update($, compactArm, () => null)
+          await update($, compactRun, () => 'queued')
+          // As if typed: it shows in the transcript and waits until the session is idle; it resolves once it ran.
+          void $.command
+            .run({ command: 'compact', args: '' })
+            .catch(() => {})
+            .finally(() => void update($, compactRun, () => null).catch(() => {}))
+        } else {
+          await update($, compactArm, () => at)
+          $.clock.after(ARM_MS + 100, () => void host?.bump().catch(() => {}))
+        }
+      },
+      hide: async () => {
+        await update($, isHidden, () => true)
+        $.ui.toast('HUD hidden for this session. /hud shows it again.')
+      },
     }
+    // A reload leaves the session's state: a run it was waiting on is no one's now.
+    await update($, compactRun, () => null)
     await $.command.register({
       name: 'hud',
       description: 'Turn the HUD on or off; also above, below, alerts',
@@ -323,14 +401,22 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // A compaction starts a new cache: nothing to count down until the next request.
+  // A compaction of the conversation runs: the HUD says so and compact presses wait.
+  // One that stands starts a new cache: nothing to count down until the next request.
+  // `precompute` summarizes ahead of time in the background, and changes neither.
   on('session.compact', async ($, e, next) => {
-    const result = await next(e)
-    if (e.agentId === undefined) {
-      await update($, cache, c => ({ ...c, lastRequestAt: null, tokens: null }))
-      await armExpiry(await read($, cache))
+    const isMain = e.agentId === undefined && e.trigger !== 'precompute'
+    if (isMain) await update($, compactRun, () => 'running')
+    try {
+      const result = await next(e)
+      if (isMain) {
+        await update($, cache, c => ({ ...c, lastRequestAt: null, tokens: null }))
+        await armExpiry(await read($, cache))
+      }
+      return result
+    } finally {
+      if (isMain) await update($, compactRun, () => null).catch(() => {})
     }
-    return result
   }).catch(($, e, next) => next(e))
 
   on('classic.SessionStart', async ($, e, next) => {
@@ -386,7 +472,12 @@ export const register: Register = on => {
 
   on('command.run', { command: 'hud' }, async ($, e) => {
     const was = await read($, prefs)
-    const { prefs: now, text } = runHudCommand(e.args, was)
+    // Hidden by its hide control: `/hud`, `on`, `above` or `below` bring it back.
+    const verb = e.args.trim().toLowerCase()
+    if (verb === 'debug') return { text: describeProbe(probe).join('\n') }
+    const isShowing = (await read($, isHidden)) && ['', 'on', 'above', 'below'].includes(verb)
+    if (isShowing) await update($, isHidden, () => false)
+    const { prefs: now, text } = runHudCommand(isShowing && verb === '' ? 'on' : e.args, was)
     if (JSON.stringify(now) !== JSON.stringify(was)) {
       await update($, prefs, () => now)
       await $.store.set(STORE_PREFS, now)
@@ -400,11 +491,39 @@ export const register: Register = on => {
     return { text }
   })
 
+  // The click layer over the desktop's screen: its size, the pointer's events, and its presses.
+  on('ui.message', async ($, e, next) => {
+    if (e.element === 'hit') {
+      const m = (e.data ?? {}) as Partial<HudHitMessage>
+      const layer = { columns: Number(m.columns ?? 0), rows: Number(m.rows ?? 0), moves: Number(m.moves ?? 0), presses: Number(m.presses ?? 0) }
+      probe.layer = layer
+      if (m.pointer) probe.events = [...probe.events, describePointer(m.pointer, layer, m.press)].slice(-PROBE_LOG)
+      // The surface keeps one post per frame: a press is a rise in the count, whichever post carries it.
+      const isPress = seenPresses !== null && layer.presses > seenPresses
+      seenPresses = layer.presses
+      await $.store.set(STORE_DEBUG, describeProbe(probe)).catch(() => {})
+      if (isPress && m.pressed === 'compact') await host?.pressCompact()
+      if (isPress && m.pressed === 'hide') await host?.hide()
+    }
+    return next(e)
+  })
+
+  // The click layer failed on a surface: leave it out from now on (the native buttons stay), and say why.
+  on('ui.fault', async ($, e, next) => {
+    if (e.element === 'hit') {
+      isLayerBroken = true
+      probe.faults = [...probe.faults, `${e.surface} ${e.phase}: ${e.reason}`].slice(-PROBE_LOG)
+      $.ui.log(`hud: the click layer over the CRT screen failed (${e.phase}): ${e.reason}`)
+      await $.store.set(STORE_DEBUG, describeProbe(probe)).catch(() => {})
+    }
+    return next(e)
+  })
+
   // Above the prompt as a band, or under it before the engine's hint line.
   on('ui.render', { component: ['AbovePrompt', 'PromptHint'] }, async ($, e, next) => {
     const p = await read($, prefs)
     const isAbove = e.component === 'AbovePrompt'
-    if (!p.isVisible || p.position !== (isAbove ? 'above' : 'below')) return next(e)
+    if (!p.isVisible || p.position !== (isAbove ? 'above' : 'below') || (await read($, isHidden))) return next(e)
     if (e.component === 'AbovePrompt' && e.props.hasSurvey) return next(e)
     const width = e.component === 'AbovePrompt' ? e.props.bodyColumns : e.viewport?.columns
     await read($, tick)
@@ -415,6 +534,7 @@ export const register: Register = on => {
       usage: await read($, usage),
       model: await read($, model),
       compact: await read($, compact),
+      compactRun: await read($, compactRun),
       cache: await read($, cache),
       activity: await read($, activity),
       now,
@@ -423,48 +543,58 @@ export const register: Register = on => {
     if (all.length === 0) return rest
 
     // Compact runs on a second press within ARM_MS: /compact cannot be undone.
+    const run = await read($, compactRun)
     const armedAt = await read($, compactArm)
-    const isArmed = armedAt !== null && now - armedAt < ARM_MS
-    const onCompact = async () => {
-      const at = await $.clock.now()
-      const was = await read($, compactArm)
-      if (was !== null && at - was < ARM_MS) {
-        await update($, compactArm, () => null)
-        // As if typed: it shows in the transcript and waits until the session is idle.
-        void $.command.run({ command: 'compact', args: '' }).catch(() => {})
-      } else {
-        await update($, compactArm, () => at)
-        host?.after(ARM_MS + 100, () => void host?.bump().catch(() => {}))
-      }
-    }
+    const isArmed = run === null && armedAt !== null && now - armedAt < ARM_MS
     const isWorking = e.props.isWorking
-    const indent = isAbove ? 2 : 0
 
     if (e.surface === 'desktop') {
-      const { Box, Button, Svg } = $.ui.resolve(e)
-      const columns = width ?? 100
-      const screen = crtScreen(all, { width: Math.max(380, Math.min(620, columns * 7.6)), isWorking })
-      const hasCompact = all.some(l => l.action === 'compact')
+      const { Box, Button, Client, Svg } = $.ui.resolve(e)
+      const columns = (width ?? 100) + (isAbove ? ENGINE_COLUMNS : 0)
+      const screen = crtScreen(all, { width: Math.max(MIN_SCREEN_PX, columns * DESKTOP_CELL_PX), isWorking, isArmed, compactRun: run })
+      const hit: HudHitProps = { width: screen.width, rows: HIT_ROWS, targets: screen.targets }
+      probe.screen = hit
+      // An image with no size of its own: the desktop draws it as wide as the band, its height in proportion.
+      // An image takes no presses: a transparent click layer over its header hits the controls drawn there.
+      // On trial: the native buttons under it stay until the layer is known to work on the desktop.
       return (
         <Box flexDirection="column">
-          <Box flexDirection="row" alignItems="flex-end" columnGap={2} paddingLeft={indent}>
-            <Svg key="screen" source={screen.source} alt={panelText(all)} width={screen.width} height={screen.height} isInteractive />
-            {hasCompact ? (
-              <Button key="compact" label={isArmed ? 'Confirm compact' : 'Compact now'} variant={isArmed ? 'primary' : 'secondary'} onPress={onCompact} />
-            ) : null}
+          <Box position="relative" flexDirection="column">
+            <Svg key="screen" source={screen.source} alt={panelText(all)} />
+            {isLayerBroken ? null : (
+              <Box position="absolute" top={0} left={0} width="100%" height={HIT_ROWS}>
+                <Client key="hit" module="./hit.tsx" props={hit} width="100%" height={HIT_ROWS} />
+              </Box>
+            )}
+          </Box>
+          <Box flexDirection="row" justifyContent="flex-end" columnGap={1}>
+            <Button
+              key="compact"
+              variant={isArmed ? 'primary' : 'secondary'}
+              label={run === 'running' ? 'Compacting…' : run === 'queued' ? 'Compact queued' : isArmed ? 'Click again to compact' : 'Compact'}
+              onPress={() => host?.pressCompact()}
+            />
+            <Button key="hide" role="dismiss" label="Hide HUD" onPress={() => host?.hide()} />
           </Box>
           {rest}
         </Box>
       )
     }
 
+    const indent = isAbove ? 2 : 0
     const { Box, Button, Text } = $.ui.resolve(e)
     const room = e.component === 'AbovePrompt' ? e.props.maxRows - 3 : DEFAULT_LINES
     const lines = fitPanel(all, Math.max(4, room))
-    const button = <Button key="compact" plain label={isArmed ? ' ▸ confirm?' : ' ▸ compact'} onPress={onCompact} />
+    const compactButton =
+      run === null ? (
+        <Button key="compact" plain label={isArmed ? 'CONFIRM ▸' : 'COMPACT ▸'} onPress={() => host?.pressCompact()} />
+      ) : (
+        <Text color={PALETTE.dim}>COMPACT ◌</Text>
+      )
+    const hideButton = <Button key="hide" plain label="✕" onPress={() => host?.hide()} />
     return (
       <Box flexDirection="column">
-        {drawPanel({ Box, Text }, lines, { columns: width ?? 80, isWorking, indent, compact: button })}
+        {drawPanel({ Box, Text }, lines, { columns: width ?? 80, isWorking, run, indent, compact: compactButton, hide: hideButton })}
         {rest}
       </Box>
     )

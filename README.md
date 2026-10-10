@@ -1,13 +1,21 @@
-# claude-mods
+# Claude CRT HUD Mod
 
-Claude Code mods (plugins of function hooks), kept as one plugin marketplace. Each mod lives in
-`mods/<name>/` and is listed in `.claude-plugin/marketplace.json`.
+Claude Code mods (plugins of function hooks), kept as one plugin marketplace, `claude-mods`. Each mod
+lives in `mods/<name>/` and is listed in `.claude-plugin/marketplace.json`.
 
 | Mod | What it does |
 | --- | --- |
 | [hud](mods/hud) | A CRT-style status panel above or below the prompt: model, project and git, context with a compact button, plan usage, prompt cache, cost and running tools. |
 
-## Install from this folder
+## Install
+
+In Claude Code:
+
+```
+/plugin install hud --marketplace BedirYilmaz/claude-crt-hud-mod
+```
+
+From a clone:
 
 ```sh
 claude plugin marketplace add ~/git/claude-mods
@@ -15,8 +23,7 @@ claude plugin install hud@claude-mods
 ```
 
 A marketplace that is a local folder is read from the folder itself, so after editing a mod, run
-`/reload-plugins` in the session. Once the repository is on GitHub, the install line is
-`/plugin install hud --marketplace <owner>/claude-mods`.
+`/reload-plugins` in the session.
 
 ## Adding a mod
 

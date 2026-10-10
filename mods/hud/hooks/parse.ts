@@ -1,6 +1,6 @@
 // Text the HUD reads and turns into values: git's porcelain status, the
 // transcript's last cache write, and `/hud`'s arguments. No `$` here.
-import type { HudPrefs, HudRepo } from '../types'
+import type { HudHitPointer, HudHitProps, HudPrefs, HudRepo } from '../types'
 
 /** `git status --porcelain=v2 --branch` → the branch and how many paths changed. */
 export function parseGitStatus(stdout: string): NonNullable<HudRepo> {
@@ -57,6 +57,7 @@ export const HUD_USAGE = [
   '/hud alerts       show the toast thresholds',
   '/hud alerts context 80,90 usage 90',
   '/hud alerts off',
+  '/hud debug        what the click layer over the desktop screen has seen',
 ].join('\n')
 
 /** `80,90` → [80, 90]; `off` → []; null when any value is not a whole percent from 1 to 100. */
@@ -130,4 +131,39 @@ export function prefsFrom(stored: unknown, fallback: HudPrefs): HudPrefs {
 /** The last path segment: the project's name from its root. */
 export function baseName(path: string): string {
   return path.replace(/\/+$/, '').split('/').pop() || path
+}
+
+/** What the click layer over the desktop's screen has reported: for `/hud debug` and the store's `debug` key. */
+export type HudProbe = {
+  screen: HudHitProps | null
+  /** Its region, moves and presses as last posted; null until it posts once. */
+  layer: { columns: number; rows: number; moves: number; presses: number } | null
+  /** The last pointer events, oldest first, as describePointer words them. */
+  events: string[]
+  /** Faults the engine reported for it, as `<surface> <phase>: <reason>`. */
+  faults: string[]
+}
+
+/** One event: `down at 31,11 of 62×21 (left) → compact, pressed`. */
+export function describePointer(p: HudHitPointer, region: { columns: number; rows: number }, press?: string): string {
+  const fine = p.fine ? ` (fine ${p.fine.x.toFixed(2)},${p.fine.y.toFixed(2)})` : ''
+  const button = p.button ? ` (${p.button})` : ''
+  const outcome = p.type === 'down' || p.type === 'up' ? ` → ${press ? `${press}, pressed` : (p.target ?? 'no control')}` : ''
+  return `${p.type} at ${p.x},${p.y}${fine} of ${region.columns}×${region.rows}${button}${outcome}`
+}
+
+/** The probe as lines of text. */
+export function describeProbe(probe: HudProbe): string[] {
+  const s = probe.screen
+  const screen = s
+    ? `Screen ${s.width} px wide (before the desktop scales it); header controls ` +
+      s.targets.map(t => `${t.key} x ${Math.round(t.left)}–${Math.round(t.right)}`).join(', ')
+    : 'Screen: not drawn on the desktop yet.'
+  const l = probe.layer
+  const layer = l
+    ? `Click layer: running, ${l.columns}×${l.rows} cells, ${l.moves} pointer moves and ${l.presses} presses seen.`
+    : 'Click layer: never heard from (it did not load, or has not drawn yet).'
+  const faults = probe.faults.length ? probe.faults.map(f => `Fault: ${f}`) : ['Faults: none.']
+  const events = probe.events.length ? ['Events:', ...probe.events] : ['Events: none yet.']
+  return [screen, layer, ...faults, ...events]
 }

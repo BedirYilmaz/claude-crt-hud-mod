@@ -3,40 +3,65 @@
 A CRT-style status panel for Claude Code, in the terminal and in the desktop app's Code tab. It is
 inspired by [hoobnn's hud](https://github.com/hoobnn/hoobnn-agent-mods/tree/main/claude-code/hud), a
 port of [claude-hud](https://github.com/jarrodwatts/claude-hud). This is a separate, much smaller mod
-(about 45 KB of source in five files) with no Node shims.
+(about 60 KB of source in six files) with no Node shims.
 
 ```
-▌CLAUDE HUD█                                       ● WORKING
+▌CLAUDE HUD█               ● WORKING  [COMPACT ▸]  [✕ HIDE]
 MODEL                                      Opus 5.5 1M · xhigh
-PROJECT                                            my-repo
-BRANCH                                              main ±3
-CONTEXT   ▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯     37% 372k/1M
-COMPACT                                           in 594k   [Compact now]
-5-HOUR    ▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯      16% ↻52m
-7-DAY     ▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯      44% ↻2d9h
-CACHE                                                57m
-COST                                              $10.17
-RUNNING                                  Bash · 1 agent
+PROJECT                                                my-repo
+BRANCH                                                 main ±3
+CONTEXT   ▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯   37% 372k/1M
+COMPACT                                                in 594k
+5-HOUR    ▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯     16% ↻52m
+7-DAY     ▮▮▮▮▮▮▮▮▮▮▮▮▮▮▮▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯▯    44% ↻2d9h
+CACHE                                                      57m
+COST                                                    $10.17
+RUNNING                                         Bash · 1 agent
+                                       [ Compact ]  [ Hide HUD ]
 ```
 
 One line per part: the label on the left, the value flush right, and the gauges in one column
-between them.
+between them. The panel takes the full width of the band (or of the prompt, below it).
 
 - **Desktop:** an SVG screen. It has a dark glass, phosphor glow, scanlines, a vignette, a slow
   rolling scan band, a subtle flicker and a blinking cursor. All of the motion stops when the system
-  asks for reduced motion. The screen is up to 620 px wide, and the `Compact now` button sits beside
-  it.
+  asks for reduced motion. It is drawn as an image with no size of its own: the markup is laid out a
+  little wider than the band (8 px a cell, plus the engine's five reserved cells) and the desktop
+  scales it down to fit, its height in proportion. An image takes no clicks, so a transparent click
+  layer (`hooks/hit.tsx`, a `Client`) lies over the screen's header, where `COMPACT ▸` and `✕ HIDE`
+  are drawn. The desktop reports exactly where across that layer a click lands, but its rows don't
+  map onto the image's pixels, so both controls share the header row and only the column decides
+  which one was clicked. The desktop sizes the layer to what it draws rather than to its height, so
+  it draws two empty rows to cover the whole header. It keeps one post per frame from the layer, so
+  every post carries a running count of presses: a quick click still counts when the post of its
+  up replaced the post of its down. The layer is on
+  trial: native `Compact` and `Hide HUD` buttons stay under the screen until it is known to work in
+  the desktop app, and if the engine reports that the layer failed, the HUD leaves it out and says
+  why in the transcript. Nothing on the screen changes on hover.
 - **Terminal:** a dark, round-bordered box. Every other line is a shade lighter, like a scanline.
-  The gauges are `█░`, and `▸ compact` sits at the end of the `COMPACT` line.
+  The gauges are `█░`. `COMPACT ▸` and `✕` are buttons: click them, or reach them with ctrl+x tab.
 
-The header shows `● WORKING` (blinking amber) while a turn runs, and `○ IDLE` otherwise.
+The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTING` or
+`◌ COMPACT QUEUED` while a compaction runs or waits, and `○ IDLE` otherwise.
 
-### Compact
+### Compact and hide
 
-Pressing compact arms it: the button reads `Confirm compact` (desktop) or `▸ confirm?` (terminal) for
-5 seconds. A second press in that time runs `/compact`, exactly as if you had typed it: it shows in
-the transcript and waits until the session is idle. The two presses guard against a stray click,
-since a compaction cannot be undone.
+- **Compact:** `COMPACT ▸` in the desktop screen's header or the `Compact` button under it, or the
+  `COMPACT ▸` label on the terminal. A first press arms it for 5 seconds: the COMPACT line turns
+  amber and reads `click again to compact`, and the control turns amber (`Click again to compact`
+  on the desktop button, `CONFIRM ▸` on the terminal). A second press in that
+  time runs `/compact`, exactly as if you had typed it: it shows in the transcript and waits until
+  the session is idle. The two presses guard against a stray click, since a compaction cannot be
+  undone; a double-click (two presses within 0.4 s) counts as one.
+- **One compaction at a time:** from the confirming press until the compaction ends, and during
+  any other compaction of the conversation (a typed `/compact`, auto-compaction), the compact
+  control rests dim and the COMPACT line reads `queued · runs when idle` or `compacting…`. A press
+  then only says so in a toast: it queues no second `/compact`. A summary computed ahead of time in
+  the background (`precompute`) changes nothing on screen.
+- **While compacting:** Claude Code holds every slash command, `/hud` too, until the compaction
+  ends. `✕ HIDE` still reaches the HUD then, since it is not a command.
+- **Hide:** `✕ HIDE` in the header or the `Hide HUD` button (desktop), or `✕` (terminal), puts the panel away for this session. `/hud`
+  brings it back. A new session shows it again; `/hud off` hides it for good.
 
 ### Colors
 
@@ -61,7 +86,7 @@ one place, `PALETTE` in `hooks/panel.ts`:
 | `MODEL` | The last main-thread request (`turn.step`); before the first request, `$.session.model()` and `effortLevel` from settings. |
 | `PROJECT`, `BRANCH` with `±` uncommitted paths | The project is the repository root's name (the main tree's name for a worktree), else the directory's. The branch and count come from `git --no-optional-locks status --porcelain=v2 --branch`. |
 | `CONTEXT` | `$.session.usage()` and the `session.measure` pushes. |
-| `COMPACT` | The tokens left before auto-compaction. The engine's own threshold comes from `usage({ breakdown: 'summary' })`, a local estimate that sends no request, read at load and again only when the window changes. |
+| `COMPACT` | The tokens left before auto-compaction (`in 594k`). The engine's own threshold comes from `usage({ breakdown: 'summary' })`, a local estimate that sends no request, read at load and again only when the window changes. Right after a compaction, before the context is measured again, it shows the threshold (`at 920k`); with auto-compaction off, `auto off`. The line always shows, since it carries the compact control. |
 | `5-HOUR`, `7-DAY` with the reset countdown | `usage().rateLimits`; absent off a subscription. |
 | `CACHE` | Derived (see below). |
 | `COST` | `usage().cost`, as `/cost` totals it. |
@@ -96,6 +121,7 @@ and the first plan window always stay.
 | `/hud alerts` | Lists the toast thresholds. |
 | `/hud alerts context 80,90 usage 90` | Toasts once per threshold, again only after the gauge falls 5 points below it. `usage` covers the 5-hour and 7-day windows. |
 | `/hud alerts off` | Turns all toasts off. Toasts are off by default. |
+| `/hud debug` | What the click layer over the desktop's screen has reported: whether it runs and its size in cells, any failure the engine reported, and its last pointer events (where each click landed, and which control that hit). |
 
 The settings live in the mod's own `$.store`, not in settings.json, so `/hud` works in the desktop
 app too, where `/config` isn't available.
@@ -110,9 +136,13 @@ app too, where `/config` isn't available.
   the run writes nothing. It runs at session start, at the start of each turn, and after an `Edit`,
   `Write`, `MultiEdit`, `NotebookEdit` or `Bash` call, at most once every 5 seconds. It never runs
   while the HUD is off, or when no surface is attached (`claude -p`).
-- **Runs on a press.** `/compact`, through `$.command.run`, only after the second press of the compact button.
-- **Writes.** Its own `$.state` values (declared in `types/index.d.ts`) and two keys in its own
-  `$.store` (`prefs`, `ttl`). It writes no files.
+- **Runs on a press.** `/compact`, through `$.command.run`, only after the second press of the
+  compact control, and never while a compaction is queued or running. The click layer sends the
+  hooks module its size, the pointer's clicks, entries and exits with where they landed, and counts
+  of moves and presses; nothing else.
+- **Writes.** Its own `$.state` values (declared in `types/index.d.ts`) and keys in its own
+  `$.store`: `prefs`, `ttl`, and, while the click layer is on trial, `debug` (what `/hud debug`
+  shows). It writes no files.
 - **Never.** No model calls, no network, no `$.fs.write`, and no edits to settings. It refuses or
   rewrites nothing: each hook at a gating site passes through, and a `.catch` passes the event on if
   the HUD itself fails.
@@ -134,7 +164,8 @@ A mask switched on mid-session applies at the next git refresh (the next turn, o
 
 - `hooks/register.tsx`: the hooks, and every `$` call.
 - `hooks/panel.ts`: what each line says, its tones, the palette, and the drop order. Pure.
-- `hooks/crt.ts`: the desktop's CRT screen as an SVG document. Pure.
+- `hooks/crt.ts`: the desktop's CRT screen as an SVG document, and where its controls are. Pure.
+- `hooks/hit.tsx`: the click layer over the desktop's screen, a `Client` surface module.
 - `hooks/alerts.ts`: the threshold toasts. Pure.
 - `hooks/parse.ts`: git's porcelain output, the transcript's cache tier, and `/hud`'s arguments. Pure.
 - `types/index.d.ts`: the state contract.

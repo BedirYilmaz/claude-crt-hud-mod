@@ -1,7 +1,15 @@
 // The panel as a CRT screen for the desktop app: an SVG with a dark glass,
 // phosphor glow, scanlines, a vignette and a slow rolling scan band. Labels sit
 // left, values flush right, gauges as segmented bars aligned between them.
-// Motion stops under prefers-reduced-motion. No `$` here.
+// `COMPACT ▸` and `✕ HIDE` are outlined controls in the header, and the screen
+// says where they are across it (`targets`): it is an image, so hit.tsx, a
+// click layer over the header alone, turns clicks there into presses. The
+// desktop reports where a click lands across that layer exactly, but not how
+// its rows meet the image's pixels, so every control shares the header's row.
+// Armed, the compact control and the COMPACT line light up; while a compaction
+// is queued or running it dims, and the header says so. Motion stops under
+// prefers-reduced-motion. No `$` here.
+import type { HudCompactRun, HudHitTarget } from '../types'
 import { type Line, PALETTE, type Span, textOf } from './panel.js'
 
 const FONT = 13
@@ -11,10 +19,25 @@ const ROW = 22
 const PAD_X = 20
 const HEAD = 42
 const FOOT = 14
-/** The widest label, `CONTEXT` or `PROJECT`, plus room. */
-const LABEL_CHARS = 9
+/** The widest label, `CONTEXT` or `COMPACT`, plus room. */
+const LABEL_CHARS = 10
+/** The header's text baseline, and the room between its controls. */
+const HEAD_Y = 25
+const CONTROL_GAP = 22
+const HIDE = '✕ HIDE'
+const COMPACT = 'COMPACT ▸'
 
-export type Screen = { source: string; width: number; height: number }
+export type Screen = { source: string; width: number; height: number; targets: HudHitTarget[] }
+
+export type ScreenOptions = {
+  /** The markup's width in CSS pixels; the desktop scales it down to the slot. */
+  width: number
+  isWorking: boolean
+  /** Compact was pressed once: the next press runs it. */
+  isArmed?: boolean
+  /** A /compact queued or running: the control rests dim. */
+  compactRun?: HudCompactRun
+}
 
 const esc = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 const chars = (text: string) => [...text].length
@@ -34,6 +57,30 @@ function bar(percent: number, color: string, x: number, top: number, width: numb
   return out
 }
 
+/** The band behind the armed COMPACT line. */
+function lit(x: number, y: number, width: number, height: number, color: string): string {
+  return `<rect class="lit" x="${px(x)}" y="${px(y)}" width="${px(width)}" height="${px(height)}" rx="3" fill="${color}" fill-opacity=".14" stroke="${color}" stroke-opacity=".5"/>`
+}
+
+/** How a header control reads: at rest, lit amber when armed, dim while it has nothing to do. */
+type Look = 'control' | 'lit' | 'busy'
+
+const LOOKS: Record<Look, { color: string; fill: string; stroke: string }> = {
+  control: { color: PALETTE.ok, fill: '.07', stroke: '.45' },
+  lit: { color: PALETTE.warn, fill: '.18', stroke: '.7' },
+  busy: { color: PALETTE.dim, fill: '0', stroke: '.6' },
+}
+
+/** An outlined header control: `text` ending at `end`. */
+function control(text: string, end: number, look: Look = 'control'): string {
+  const width = chars(text) * CHAR
+  const { color, fill, stroke } = LOOKS[look]
+  return (
+    `<rect class="${look}" x="${px(end - width - 6)}" y="${HEAD_Y - 14}" width="${px(width + 12)}" height="19" rx="3" fill="${color}" fill-opacity="${fill}" stroke="${color}" stroke-opacity="${stroke}"/>` +
+    `<text x="${px(end)}" y="${HEAD_Y}" text-anchor="end" fill="${color}"${look === 'lit' ? ' font-weight="700"' : ''}>${esc(text)}</text>`
+  )
+}
+
 const STYLE = `
 text { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: ${FONT}px; white-space: pre; }
 .flicker { animation: flicker 5s infinite steps(1); }
@@ -45,19 +92,28 @@ text { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-si
 @media (prefers-reduced-motion: reduce) { .flicker, .blink, .roll { animation: none } .roll { display: none } }
 `
 
-/** The screen at `width` CSS pixels, as tall as its lines need. */
-export function crtScreen(lines: readonly Line[], options: { width: number; isWorking: boolean }): Screen {
+/** The screen at `width` CSS pixels, as tall as its lines need, and where its controls are. */
+export function crtScreen(lines: readonly Line[], options: ScreenOptions): Screen {
   const W = Math.round(options.width)
   const H = HEAD + lines.length * ROW + FOOT
   const right = W - PAD_X
   const valueChars = Math.max(0, ...lines.filter(l => l.gauge).map(l => chars(textOf(l.value))))
   const barX = PAD_X + LABEL_CHARS * CHAR
   const barW = Math.max(60, right - valueChars * CHAR - 18 - barX)
-  const segments = Math.max(10, Math.min(32, Math.round(barW / 9)))
+  const segments = Math.max(10, Math.min(60, Math.round(barW / 9)))
+  const targets: HudHitTarget[] = []
 
   const rows = lines
     .map((line, i) => {
-      const y = HEAD + i * ROW + 15
+      const top = HEAD + i * ROW
+      const y = top + 15
+      if (line.action === 'compact' && options.isArmed && !options.compactRun) {
+        return (
+          lit(PAD_X - 8, top + 1, right - PAD_X + 16, ROW - 2, PALETTE.warn) +
+          `<text x="${PAD_X}" y="${y}" fill="${PALETTE.warn}" font-weight="700">${esc(line.label)}</text>` +
+          `<text x="${right}" y="${y}" text-anchor="end" fill="${PALETTE.warn}" font-weight="700" class="blink">click again to compact</text>`
+        )
+      }
       const gauge = line.gauge ? bar(line.gauge.percent, PALETTE[line.gauge.tone], barX, y - 9, barW, segments) : ''
       return (
         `<text x="${PAD_X}" y="${y}" fill="${PALETTE.label}">${esc(line.label)}</text>` +
@@ -67,9 +123,22 @@ export function crtScreen(lines: readonly Line[], options: { width: number; isWo
     })
     .join('')
 
-  const status = options.isWorking
-    ? `<text x="${right}" y="25" text-anchor="end" fill="${PALETTE.warn}" class="blink">● WORKING</text>`
-    : `<text x="${right}" y="25" text-anchor="end" fill="${PALETTE.dim}">○ IDLE</text>`
+  // Right to left: hide, compact, then the status. Each target is its outline and half the gap beside it.
+  const hideLeft = right - chars(HIDE) * CHAR - 6
+  const compactEnd = hideLeft - CONTROL_GAP
+  const compactLeft = compactEnd - chars(COMPACT) * CHAR - 6
+  const half = (CONTROL_GAP - 6) / 2
+  targets.push({ key: 'compact', left: px(compactLeft - half), right: px(compactEnd + 6 + half) })
+  targets.push({ key: 'hide', left: px(hideLeft - half), right: W - 8 })
+  const statusX = px(compactLeft - 2 * CHAR)
+  const run = options.compactRun ?? null
+  const status =
+    run !== null
+      ? `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.warn}" class="blink">◌ ${run === 'running' ? 'COMPACTING' : 'COMPACT QUEUED'}</text>`
+      : options.isWorking
+        ? `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.warn}" class="blink">● WORKING</text>`
+        : `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.dim}">○ IDLE</text>`
+  const compactLook: Look = run !== null ? 'busy' : options.isArmed ? 'lit' : 'control'
 
   const source =
     `<svg xmlns="http://www.w3.org/2000/svg" width="${W}" height="${H}" viewBox="0 0 ${W} ${H}" style="--h: ${H + 60}px">` +
@@ -86,8 +155,10 @@ export function crtScreen(lines: readonly Line[], options: { width: number; isWo
     `<rect x="4" y="4" width="${W - 8}" height="${H - 8}" rx="13" fill="url(#hud-glass)" stroke="${PALETTE.edge}"/>` +
     '<g clip-path="url(#hud-screen)">' +
     '<g class="flicker" filter="url(#hud-glow)">' +
-    `<text x="${PAD_X}" y="25" fill="${PALETTE.label}" font-weight="700">▌CLAUDE HUD<tspan class="blink">█</tspan></text>` +
+    `<text x="${PAD_X}" y="${HEAD_Y}" fill="${PALETTE.label}" font-weight="700">▌CLAUDE HUD<tspan class="blink">█</tspan></text>` +
     status +
+    control(COMPACT, compactEnd, compactLook) +
+    control(HIDE, right) +
     `<line x1="${PAD_X}" y1="33" x2="${right}" y2="33" stroke="${PALETTE.dim}" stroke-dasharray="2 4"/>` +
     rows +
     '</g>' +
@@ -97,5 +168,5 @@ export function crtScreen(lines: readonly Line[], options: { width: number; isWo
     '</g>' +
     '</svg>'
 
-  return { source, width: W, height: H }
+  return { source, width: W, height: H, targets }
 }

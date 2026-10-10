@@ -1,7 +1,7 @@
-import { describe, expect, mock, test } from 'claude-code/testing'
+import { type MockClock, type Mounted, describe, expect, mock, test } from 'claude-code/testing'
 import type { On, RenderElement, RenderPropsOf, SessionUsage, TurnStepResult } from 'claude-code'
 
-import type { HudPrefs } from '../types'
+import type { HudHitProps, HudPrefs } from '../types'
 import { alertsFor } from '../hooks/alerts.js'
 import { crtScreen } from '../hooks/crt.js'
 import { type Line, type View, PALETTE, buildPanel, fitPanel, modelName, panelText, span, textOf, tokens } from '../hooks/panel.js'
@@ -110,8 +110,20 @@ describe('panel', () => {
       ['MODEL', 'Opus 5.5 · high'],
       ['PROJECT', 'my-repo'],
       ['CONTEXT', '–/200k'],
+      ['COMPACT', 'at 160k'],
     ])
-    expect(panelText(fresh)).toBe('MODEL Opus 5.5 · high\nPROJECT my-repo\nCONTEXT [0%] –/200k')
+    expect(panelText(fresh)).toBe('MODEL Opus 5.5 · high\nPROJECT my-repo\nCONTEXT [0%] –/200k\nCOMPACT at 160k')
+  })
+
+  test('keeps the COMPACT line, and its control, whatever is known of auto-compaction', () => {
+    const compactOf = (compact: View['compact']) => textOf(line(buildPanel({ ...VIEW, compact }), 'compact').value)
+    expect([compactOf(null), compactOf({ window: 200_000, at: null })]).toEqual(['–', 'auto off'])
+    expect(line(buildPanel({ ...VIEW, compact: null }), 'compact').action).toBe('compact')
+  })
+
+  test('says on the COMPACT line when a compaction is queued or running', () => {
+    const runOf = (compactRun: View['compactRun']) => textOf(line(buildPanel({ ...VIEW, compactRun }), 'compact').value)
+    expect([runOf('queued'), runOf('running'), runOf(null)]).toEqual(['queued · runs when idle', 'compacting…', 'in 84k'])
   })
 
   test('formats models, tokens and countdowns', () => {
@@ -131,6 +143,44 @@ describe('crt screen', () => {
       expect(screen.source).toContain(text)
     }
     expect(crtScreen(lines, { width: 600, isWorking: true }).source).toContain('● WORKING')
+  })
+
+  test('puts COMPACT and HIDE side by side in the header, says where they span, and lights compact when armed', () => {
+    const lines = buildPanel(VIEW)
+    const screen = crtScreen(lines, { width: 600, isWorking: false })
+    const [compact, hide] = screen.targets
+    expect(screen.targets.map(t => t.key)).toEqual(['compact', 'hide'])
+    // Right to left with no overlap, hide reaching the screen's edge, the status left of both.
+    expect(hide!.right).toBe(592)
+    expect(compact!.right).toBeLessThanOrEqual(hide!.left)
+    expect(compact!.right - compact!.left).toBeGreaterThan(9 * 7.8)
+    const statusX = Number(/x="([\d.]+)"[^>]*>○ IDLE/.exec(screen.source)?.[1])
+    expect(statusX).toBeLessThan(compact!.left)
+    expect(screen.source.match(/class="control"/g)).toHaveLength(2)
+    expect(screen.source).toContain('>COMPACT ▸</text>')
+    expect(screen.source).toContain('>✕ HIDE</text>')
+    expect(screen.source).not.toContain('class="lit"')
+    expect(screen.source).toContain('in </tspan>')
+    const armed = crtScreen(lines, { width: 600, isWorking: false, isArmed: true }).source
+    // The compact control and the COMPACT line light up; hide stays as it was.
+    expect(armed.match(/class="lit"/g)).toHaveLength(2)
+    expect(armed.match(/class="control"/g)).toHaveLength(1)
+    expect(armed).toContain('click again to compact')
+    expect(armed).not.toContain('in </tspan>')
+  })
+
+  test('dims the compact control while a compaction is queued or running, and says so in the header', () => {
+    const running = crtScreen(buildPanel({ ...VIEW, compactRun: 'running' }), { width: 600, isWorking: true, isArmed: true, compactRun: 'running' })
+    // Neither armed nor working: the compaction is what is going on.
+    expect(running.source).toContain('◌ COMPACTING')
+    expect(running.source).not.toContain('● WORKING')
+    expect(running.source).not.toContain('class="lit"')
+    expect(running.source.match(/class="busy"/g)).toHaveLength(1)
+    expect(running.source.match(/class="control"/g)).toHaveLength(1)
+    expect(running.source).toContain('compacting…')
+    expect(running.targets.map(t => t.key)).toEqual(['compact', 'hide'])
+    const queued = crtScreen(buildPanel({ ...VIEW, compactRun: 'queued' }), { width: 600, isWorking: false, compactRun: 'queued' })
+    expect(queued.source).toContain('◌ COMPACT QUEUED')
   })
 
   test('aligns the gauges in one column and escapes what it is given', () => {
@@ -207,16 +257,25 @@ const USAGE: SessionUsage = {
   cost: { usd: 2.14 },
 }
 
-/** The machine beneath the plugins: a repo at /work/my-repo, one terminal attached. */
-function world(on: On, gitCalls: string[][] = [], commands: string[] = []) {
+/**
+ * The machine beneath the plugins: a repo at /work/my-repo, one terminal attached.
+ * Given a clock, `/compact` waits `queuedMs` on it, as it does for the session
+ * to go idle, and a compaction takes `compactMs`.
+ */
+function world(on: On, gitCalls: string[][] = [], commands: string[] = [], timing?: { clock: MockClock; queuedMs: number; compactMs: number }) {
   mock.store(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('classic.SessionStart', () => ({}))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
-  on('command.run', { command: 'compact' }, ($, e) => {
+  on('command.run', { command: 'compact' }, async ($, e) => {
     commands.push(e.command)
+    if (timing) await timing.clock.sleep(timing.queuedMs)
     return { text: 'Compacted.' }
+  })
+  on('session.compact', async ($, e) => {
+    if (timing) await timing.clock.sleep(timing.compactMs)
+    return { messages: e.messages }
   })
   // The engine's own drawing: an empty band, and the hint line under the prompt.
   on('ui.render', ($, e) =>
@@ -246,8 +305,19 @@ async function seen(ui: Drawing): Promise<string> {
   return [texts, ...screens].join('\n')
 }
 
+/** The click layer's grid in the tests: 125 columns across the screen, the header's 2 rows. */
+const LAYER = { columns: 125, rows: 2 }
+
+/** Moves the pointer to, or clicks, a header control, through the click layer; `row` is 0 or 1. */
+async function pointAt(ui: Mounted<'desktop', 'AbovePrompt'>, key: string, type: 'enter' | 'move' | 'down' | 'up', row = 0) {
+  const hit = (await ui.find({ key: 'hit' }))!.props.props as HudHitProps
+  const target = hit.targets.find(t => t.key === key)!
+  const x = Math.floor(((target.left + target.right) / 2 / hit.width) * LAYER.columns)
+  await ui.pointer(type === 'down' || type === 'up' ? { type, x, y: row, button: 'left', in: 'hit' } : { type, x, y: row, in: 'hit' })
+}
+
 describe('in the engine', () => {
-  test('a dark panel on the terminal, a CRT screen on the desktop, and git stays read-only', async ($, on) => {
+  test('a full-width dark panel on the terminal, a full-width CRT screen on the desktop, and git stays read-only', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const gitCalls: string[][] = []
     world(on, gitCalls)
@@ -257,42 +327,212 @@ describe('in the engine', () => {
 
     const terminal = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
     const shown = await seen(terminal)
-    for (const text of ['▌CLAUDE HUD', 'MODELOpus 5.5 · high', 'PROJECTmy-repo', 'BRANCHfeat/hud ±3', '38% 76k/200k', 'COMPACTin 84k', '42% ↻2h14m', '61% ↻3d4h', 'COST$2.14']) {
+    for (const text of ['▌CLAUDE HUD', 'MODELOpus 5.5 · high', 'PROJECTmy-repo', 'BRANCHfeat/hud ±3', '38% 76k/200k', 'in 84k', '42% ↻2h14m', '61% ↻3d4h', 'COST$2.14']) {
       expect(shown).toContain(text)
     }
     expect((await terminal.find({ type: 'Text', text: 'Opus 5.5' }))?.props).toMatchObject({ color: PALETTE.model, bold: true })
-    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe(' ▸ compact')
+    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe('COMPACT ▸')
+    expect((await terminal.find({ key: 'hide' }))?.props.label).toBe('✕')
+    // As wide as the band, less its indent.
+    expect((await terminal.findAll({ type: 'Box' })).find(b => b.props.borderStyle === 'round')?.props.width).toBe(118)
     await terminal.unmount()
 
     const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
     const screen = await desktop.find({ type: 'Svg' })
     expect(String(screen?.props.alt)).toContain('CONTEXT [38%] 38% 76k/200k')
     expect(String(screen?.props.source)).toContain('Opus 5.5')
-    expect(screen?.props.isInteractive).toBe(true)
-    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compact now')
+    // No size of its own: the desktop fits the markup, a little wider than the band, to the band.
+    expect([screen?.props.width, screen?.props.height, screen?.props.isInteractive]).toEqual([undefined, undefined, undefined])
+    expect(String(screen?.props.source)).toMatch(/^<svg [^>]*width="1000"/)
+    const layer = await desktop.find({ key: 'hit' })
+    expect(layer?.type).toBe('Client')
+    expect((layer?.props.props as HudHitProps).targets.map(t => t.key)).toEqual(['compact', 'hide'])
+    expect((await desktop.find({ key: 'compact' }))?.props).toMatchObject({ label: 'Compact', variant: 'secondary' })
+    expect((await desktop.find({ key: 'hide' }))?.props).toMatchObject({ label: 'Hide HUD', role: 'dismiss' })
 
     expect(gitCalls).toEqual([['git', '--no-optional-locks', 'status', '--porcelain=v2', '--branch']])
   })
 
-  test('compact runs /compact on a second press within 5 s', async ($, on) => {
+  test('compact runs /compact on a second press within 5 s, on either surface', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
     const commands: string[] = []
     world(on, [], commands)
     await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
     await $.session.measure({ ...USAGE, changed: ['context', 'rateLimits', 'cost'] })
-    for (const surface of ['terminal', 'desktop'] as const) {
-      const ui = await $.ui.mount({ plugin: 'hud', surface, component: 'AbovePrompt', props: BAND })
-      const before = commands.length
-      await ui.press({ key: 'compact' })
-      expect(commands).toHaveLength(before)
-      expect((await ui.find({ key: 'compact' }))?.props.label).toBe(surface === 'desktop' ? 'Confirm compact' : ' ▸ confirm?')
-      await clock.advance(5_200)
-      expect((await ui.find({ key: 'compact' }))?.props.label).toBe(surface === 'desktop' ? 'Compact now' : ' ▸ compact')
-      await ui.press({ key: 'compact' })
-      await ui.press({ key: 'compact' })
-      await ui.unmount()
-    }
+
+    const terminal = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    await terminal.press({ key: 'compact' })
+    expect(commands).toEqual([])
+    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe('CONFIRM ▸')
+    await clock.advance(5_200)
+    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe('COMPACT ▸')
+    await terminal.press({ key: 'compact' })
+    await clock.advance(600)
+    await terminal.press({ key: 'compact' })
+    expect(commands).toEqual(['compact'])
+    await terminal.unmount()
+
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    const source = async () => String((await desktop.find({ type: 'Svg' }))?.props.source)
+    await clock.advance(600)
+    await desktop.press({ key: 'compact' })
+    expect(await source()).toContain('click again to compact')
+    expect((await desktop.find({ key: 'compact' }))?.props).toMatchObject({ label: 'Click again to compact', variant: 'primary' })
+    expect(commands).toEqual(['compact'])
+    // A double-click is not a confirmation.
+    await clock.advance(100)
+    await desktop.press({ key: 'compact' })
+    expect(commands).toEqual(['compact'])
+    await clock.advance(500)
+    await desktop.press({ key: 'compact' })
     expect(commands).toEqual(['compact', 'compact'])
+    expect(await source()).not.toContain('click again to compact')
+    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compact')
+
+    // The COMPACT label on the screen, through the click layer: a click is a down and an up, one press.
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    await clock.advance(600)
+    await pointAt(desktop, 'compact', 'enter')
+    await pointAt(desktop, 'compact', 'move')
+    await pointAt(desktop, 'compact', 'down')
+    await pointAt(desktop, 'compact', 'up')
+    expect(await source()).toContain('click again to compact')
+    expect(commands).toEqual(['compact', 'compact'])
+    // The header's second row is the same control: only the column counts.
+    await clock.advance(600)
+    await pointAt(desktop, 'compact', 'down', 1)
+    expect(commands).toEqual(['compact', 'compact', 'compact'])
+    const debug = String(
+      (await $.command.run({ command: 'hud', args: 'debug', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })).text,
+    )
+    expect(debug).toContain('Screen 1000 px wide')
+    expect(debug).toContain(`Click layer: running, ${LAYER.columns}×${LAYER.rows} cells, 1 pointer moves and 2 presses seen.`)
+    expect(debug).toContain('Faults: none.')
+    expect(debug).toMatch(/enter at \d+,0 of 125×2\n/)
+    expect(debug).toMatch(/down at \d+,0 of 125×2 \(left\) → compact, pressed/)
+    expect(debug).toMatch(/up at \d+,0 of 125×2 \(left\) → compact\n/)
+    expect(debug).toMatch(/down at \d+,1 of 125×2 \(left\) → compact, pressed/)
+  })
+
+  test('a quick click still presses when the surface kept only the post of its up', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const commands: string[] = []
+    world(on, [], commands)
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    await $.session.measure({ ...USAGE, changed: ['context', 'rateLimits', 'cost'] })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    const source = async () => String((await desktop.find({ type: 'Svg' }))?.props.source)
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    // The down's post (the press) was replaced by the up's in the same frame: the up carries the count.
+    const post = (presses: number, type: string) =>
+      desktop.post({ ...LAYER, moves: 0, presses, pressed: 'compact', pointer: { type, x: 80, y: 0, fine: null, button: null, target: 'compact' } }, { in: 'hit' })
+    await post(100, 'up')
+    expect(await source()).toContain('click again to compact')
+    // A later post with the same count is no new press.
+    await clock.advance(600)
+    await post(100, 'leave')
+    expect(commands).toEqual([])
+    await post(101, 'up')
+    expect(commands).toEqual(['compact'])
+  })
+
+  test('compact waits while a compaction is queued or running, and the screen says so', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    const commands: string[] = []
+    const toasts: string[] = []
+    world(on, [], commands, { clock, queuedMs: 10_000, compactMs: 20_000 })
+    on('ui.toast', ($, e) => {
+      toasts.push(e.text)
+      return { value: undefined }
+    })
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    await $.session.measure({ ...USAGE, changed: ['context', 'rateLimits', 'cost'] })
+    const terminal = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    const screen = async () => {
+      const svg = await desktop.find({ type: 'Svg' })
+      return `${String(svg?.props.alt)}\n${String(svg?.props.source)}`
+    }
+
+    // Confirmed while Claude works: /compact waits its turn, and presses meanwhile queue nothing more.
+    await desktop.press({ key: 'compact' })
+    await clock.advance(600)
+    await desktop.press({ key: 'compact' })
+    expect(commands).toEqual(['compact'])
+    expect(await screen()).toContain('◌ COMPACT QUEUED')
+    expect(await screen()).toContain('COMPACT queued · runs when idle')
+    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compact queued')
+    expect(await terminal.find({ key: 'compact' })).toBeUndefined()
+    expect(await seen(terminal)).toContain('COMPACT ◌')
+    await desktop.press({ key: 'compact' })
+    await clock.advance(600)
+    await desktop.press({ key: 'compact' })
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    await pointAt(desktop, 'compact', 'down')
+    expect(commands).toEqual(['compact'])
+    expect(toasts).toEqual(Array(3).fill('/compact is queued: it runs when Claude is idle.'))
+    await clock.advance(10_000)
+    expect(await screen()).toContain('○ IDLE')
+    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe('COMPACT ▸')
+
+    // Any compaction of the conversation, auto-compaction too, holds the control while it runs.
+    const messages = [{ role: 'user' as const, text: 'Make the HUD.', toolUses: [] }]
+    const auto = $.session.compact({ trigger: 'auto', messages })
+    await clock.advance(100)
+    expect(await screen()).toContain('◌ COMPACTING')
+    expect(await screen()).toContain('COMPACT compacting…')
+    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compacting…')
+    await clock.advance(600)
+    await pointAt(desktop, 'compact', 'down')
+    expect(commands).toEqual(['compact'])
+    expect(toasts.at(-1)).toBe('Already compacting.')
+    await clock.advance(20_000)
+    await auto
+    expect(await screen()).toContain('COMPACT in 84k')
+
+    // Summarizing ahead of time, in the background, changes nothing on screen.
+    const ahead = $.session.compact({ trigger: 'precompute', messages })
+    await clock.advance(100)
+    expect(await screen()).not.toContain('COMPACTING')
+    await clock.advance(20_000)
+    await ahead
+  })
+
+  test('right after a compaction the COMPACT line still shows, with the threshold', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    world(on)
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    await $.session.measure({ ...USAGE, context: { window: 200_000 }, changed: ['context'] })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    expect(String((await desktop.find({ type: 'Svg' }))?.props.alt)).toContain('COMPACT at 160k')
+    expect(await desktop.find({ key: 'compact' })).toBeDefined()
+  })
+
+  test('hide puts the panel away for the session; /hud brings it back', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    world(on)
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    const run = (args: string) =>
+      $.command.run({ command: 'hud', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+
+    const terminal = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    await terminal.press({ key: 'hide' })
+    expect(await seen(terminal)).not.toContain('CLAUDE HUD')
+    expect((await run('')).text).toBe('HUD on, above the prompt')
+    expect(await seen(terminal)).toContain('CLAUDE HUD')
+
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    await desktop.press({ key: 'hide' })
+    expect(await desktop.find({ type: 'Svg' })).toBeUndefined()
+    expect(await seen(terminal)).not.toContain('CLAUDE HUD')
+    expect((await run('on')).text).toBe('HUD on, above the prompt')
+    expect(await desktop.find({ type: 'Svg' })).toBeDefined()
+
+    // `✕ HIDE` on the screen, through the click layer.
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    await pointAt(desktop, 'hide', 'down', 1)
+    expect(await desktop.find({ type: 'Svg' })).toBeUndefined()
+    expect((await run('')).text).toBe('HUD on, above the prompt')
   })
 
   test(
