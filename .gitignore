@@ -1,0 +1,4 @@
+# Laid by the engine at each load: this build's API, tools and MCP types.
+**/.claude-plugin/types/
+node_modules/
+.DS_Store

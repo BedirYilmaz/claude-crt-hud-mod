@@ -1,0 +1,14 @@
+{
+  "name": "claude-mods",
+  "owner": {
+    "name": "Bedir Yilmaz"
+  },
+  "description": "Claude Code mods: function-hook plugins that draw in the terminal and the desktop Code tab.",
+  "plugins": [
+    {
+      "name": "hud",
+      "source": "./mods/hud",
+      "description": "A CRT-style status panel above or below the prompt: model, project and git, context with a compact button, plan usage, prompt cache, cost and running tools."
+    }
+  ]
+}

@@ -1,0 +1,9 @@
+{
+  "name": "hud",
+  "version": "0.1.0",
+  "description": "A CRT-style status panel above or below the prompt: model, project and git, context with a compact button, plan usage, prompt cache, cost and running tools. /hud toggles it.",
+  "author": {
+    "name": "Bedir Yilmaz"
+  },
+  "types": "./types/index.d.ts"
+}
