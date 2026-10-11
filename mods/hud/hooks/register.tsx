@@ -21,7 +21,7 @@ import {
   runHudCommand,
 } from './parse.js'
 import { crtScreen } from './crt.js'
-import { type Line, PALETTE, type Span, TTL_MS, buildPanel, fitPanel, headerSpans, panelText, toolName } from './panel.js'
+import { type Line, PALETTE, type Span, TTL_MS, buildPanel, fitHeader, fitPanel, headerSpans, panelText, toolName } from './panel.js'
 
 const DEFAULT_PREFS: HudPrefs = { isVisible: true, position: 'above', isMinimal: false, alerts: { context: [], usage: [] } }
 const EMPTY_USAGE: HudUsage = { tokens: null, window: 0, percent: null, usd: null, limits: [] }
@@ -81,6 +81,10 @@ const HIT_ROWS = 2
 /** The terminal panel's narrowest, and its label column. */
 const MIN_COLUMNS = 32
 const LABEL_COLUMNS = 9
+/** The terminal header's fixed parts, in columns: the title, and the plain buttons' labels (`COMPACT ▸`, `▾ MIN`, `✕`). */
+const TITLE_COLUMNS = 11
+const BUTTON_COLUMNS = { compact: 9, size: 5, hide: 1 }
+const HEADER_GAP = 2
 /**
  * A desktop cell (its code font's advance) in CSS pixels, a little over, so the
  * screen comes out at least as wide as the band: the desktop scales a wider
@@ -160,6 +164,11 @@ function drawPanel(
   const inner = width - 4
   const valueColumns = Math.max(0, ...lines.filter(l => l.gauge).map(l => chars(l.value.map(x => x.text).join(''))))
   const gaugeColumns = inner - LABEL_COLUMNS - 1 - valueColumns
+  const status = o.run === 'running' ? '◌ COMPACTING' : o.run === 'queued' ? '◌ COMPACT QUEUED' : o.isWorking ? '● WORKING' : '○ IDLE'
+  // Right of the title, two columns apart: the extras, the status, compact (minimal), size and hide.
+  const fixed = [chars(status), ...(o.isMinimal ? [BUTTON_COLUMNS.compact] : []), BUTTON_COLUMNS.size, BUTTON_COLUMNS.hide]
+  const room = inner - TITLE_COLUMNS - 1 - fixed.reduce((sum, n) => sum + n + HEADER_GAP, 0)
+  const extras = fitHeader(o.extras, room, HEADER_GAP)
   return (
     <Box flexDirection="column" width={width} marginLeft={o.indent} borderStyle="round" borderColor={PALETTE.edge} backgroundColor={PALETTE.bg} paddingX={1}>
       <Box flexDirection="row" justifyContent="space-between">
@@ -167,7 +176,7 @@ function drawPanel(
           ▌CLAUDE HUD
         </Text>
         <Box flexDirection="row" columnGap={2}>
-          {o.extras.map((spans, i) => (
+          {extras.map((spans, i) => (
             <Box key={`extra-${i}`} flexDirection="row">
               {spans.map((x, k) => (
                 <Text key={`${k}`} color={PALETTE[x.tone]}>
@@ -176,9 +185,7 @@ function drawPanel(
               ))}
             </Box>
           ))}
-          <Text color={o.run !== null || o.isWorking ? PALETTE.warn : PALETTE.dim}>
-            {o.run === 'running' ? '◌ COMPACTING' : o.run === 'queued' ? '◌ COMPACT QUEUED' : o.isWorking ? '● WORKING' : '○ IDLE'}
-          </Text>
+          <Text color={o.run !== null || o.isWorking ? PALETTE.warn : PALETTE.dim}>{status}</Text>
           {o.isMinimal ? o.compact : null}
           {o.size}
           {o.hide}

@@ -6,7 +6,13 @@ import type { HudActivity, HudCache, HudCompact, HudCompactRun, HudLimit, HudMod
 /** What a span means; PALETTE turns it into a color. */
 export type Tone = 'label' | 'value' | 'dim' | 'model' | 'project' | 'clean' | 'dirty' | 'ok' | 'warn' | 'crit' | 'cache' | 'cost' | 'busy'
 
-export type Span = { text: string; tone: Tone; bold?: boolean }
+export type Span = {
+  text: string
+  tone: Tone
+  bold?: boolean
+  /** Shortened with an ellipsis in the middle where room is short: a branch name in the header. */
+  isShrinkable?: boolean
+}
 
 /** How alarming a gauge reads. */
 export type Level = 'ok' | 'warn' | 'crit'
@@ -223,8 +229,44 @@ export function costText(usage: HudUsage): string | null {
 /** What the minimal panel carries in its header, left of the status, left to right: the cost, then the branch. */
 export function headerSpans(usage: HudUsage, repo: HudRepo): Span[][] {
   const cost = costText(usage)
-  const branch = branchSpans(repo)
+  const branch = branchSpans(repo)?.map((x, i) => (i === 0 ? { ...x, isShrinkable: true } : x))
   return [...(cost === null ? [] : [[s(cost, 'cost')]]), ...(branch ? [branch] : [])]
+}
+
+/** A shrinkable span is never shortened below this many characters, the ellipsis included. */
+const MIN_SHRUNK = 10
+
+const charCount = (text: string) => [...text].length
+
+/** `text` in at most `length` characters, an ellipsis in the middle keeping both ends: `claude/camp…b46746`. */
+export function shorten(text: string, length: number): string {
+  const all = [...text]
+  if (all.length <= length) return text
+  const keep = Math.max(1, length - 1)
+  const head = Math.ceil(keep / 2)
+  return `${all.slice(0, head).join('')}…${all.slice(all.length - (keep - head)).join('')}`
+}
+
+/**
+ * The header's items fitted into `room` characters, `gap` between each. A
+ * shrinkable span (a long branch) is shortened first, then an item with one is
+ * left out, then the leftmost: the cost outlasts the branch.
+ */
+export function fitHeader(items: readonly Span[][], room: number, gap: number): Span[][] {
+  const width = (all: readonly Span[][]) => all.reduce((w, spans) => w + charCount(textOf(spans)), 0) + Math.max(0, all.length - 1) * gap
+  let fitted = items.map(spans => [...spans])
+  for (const spans of fitted) {
+    const over = width(fitted) - room
+    if (over <= 0) break
+    const i = spans.findIndex(x => x.isShrinkable)
+    const span = spans[i]
+    if (span) spans[i] = { ...span, text: shorten(span.text, Math.max(MIN_SHRUNK, charCount(span.text) - over)) }
+  }
+  while (fitted.length > 0 && width(fitted) > room) {
+    const i = fitted.findIndex(spans => spans.some(x => x.isShrinkable))
+    fitted = i >= 0 ? fitted.filter((_, k) => k !== i) : fitted.slice(1)
+  }
+  return fitted
 }
 
 function costLine(usage: HudUsage): Line | null {

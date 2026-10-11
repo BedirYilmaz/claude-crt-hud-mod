@@ -72,8 +72,10 @@ The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTI
   7-day), with the cost and the branch in the header, left of the status (`$10.17 main ±3 ○ IDLE`). The control then reads `▴ MAX`, which
   brings everything back. On the terminal `COMPACT ▸` moves into the header, since its line is gone.
   The choice is kept with the other settings, so the next session opens the same way; `/hud min`
-  and `/hud max` set it too. On a narrow desktop screen the header leaves out what does not fit
-  beside the title, from the left: the cost, the branch, then the status.
+  and `/hud max` set it too. Where the header is short of room, a long branch name is shortened in
+  the middle (`claude/camp…sign-b46746 ±1`) so the cost still fits. Shorter still, the branch is
+  left out, then the cost, then the status; the controls always stay. The terminal header does the
+  same.
 - **Hide:** `✕ HIDE` in the header (desktop) or `✕` (terminal) puts the panel away for this session. `/hud`
   brings it back. A new session shows it again; `/hud off` hides it for good.
 

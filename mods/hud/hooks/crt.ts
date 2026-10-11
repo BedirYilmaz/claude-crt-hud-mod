@@ -10,7 +10,7 @@
 // is queued or running it dims, and the header says so. Motion stops under
 // prefers-reduced-motion. No `$` here.
 import type { HudCompactRun, HudHitTarget } from '../types'
-import { type Line, PALETTE, type Span, textOf } from './panel.js'
+import { type Line, PALETTE, type Span, fitHeader, textOf } from './panel.js'
 
 const FONT = 13
 /** A monospace glyph's advance at FONT, close enough for SF Mono, Menlo and Consolas. */
@@ -141,7 +141,7 @@ export function crtScreen(lines: readonly Line[], options: ScreenOptions): Scree
   targets.push({ key: 'compact', left: px(compactLeft - half), right: px(compactEnd + 6 + half) })
   targets.push({ key: 'size', left: px(sizeLeft - half), right: px(sizeEnd + 6 + half) })
   targets.push({ key: 'hide', left: px(hideLeft - half), right: W - 8 })
-  // What does not fit beside the title is left out, from the left: the cost, the branch, then the status.
+  // What does not fit beside the title gives way: a long branch is shortened, then left out, then the cost, then the status.
   const titleEnd = PAD_X + (chars(TITLE) + 2) * CHAR
   const run = options.compactRun ?? null
   const [statusText, statusColor, isBlinking] =
@@ -156,13 +156,12 @@ export function crtScreen(lines: readonly Line[], options: ScreenOptions): Scree
     statusLeft < titleEnd
       ? ''
       : `<text x="${px(statusX)}" y="${HEAD_Y}" text-anchor="end" fill="${statusColor}"${isBlinking ? ' class="blink"' : ''}>${esc(statusText)}</text>`
+  const room = Math.floor((statusLeft - 2 * CHAR - titleEnd) / CHAR)
   let extras = ''
   let extraX = statusLeft - 2 * CHAR
-  for (const spans of status ? [...(options.extras ?? [])].reverse() : []) {
-    const left = extraX - chars(textOf(spans)) * CHAR
-    if (left < titleEnd) break
+  for (const spans of status ? fitHeader(options.extras ?? [], room, 2).reverse() : []) {
     extras = `<text x="${px(extraX)}" y="${HEAD_Y}" text-anchor="end">${spans.map(tspan).join('')}</text>` + extras
-    extraX = left - 2 * CHAR
+    extraX -= (chars(textOf(spans)) + 2) * CHAR
   }
   const compactLook: Look = run !== null ? 'busy' : options.isArmed ? 'lit' : 'control'
 

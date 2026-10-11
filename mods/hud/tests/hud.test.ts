@@ -4,7 +4,7 @@ import type { On, RenderElement, RenderPropsOf, SessionUsage, TurnStepInput, Tur
 import type { HudHitProps, HudPrefs } from '../types'
 import { alertsFor } from '../hooks/alerts.js'
 import { crtScreen } from '../hooks/crt.js'
-import { type Line, type View, PALETTE, buildPanel, fitPanel, headerSpans, modelName, panelText, span, textOf, tokens } from '../hooks/panel.js'
+import { type Line, type View, PALETTE, buildPanel, fitHeader, fitPanel, headerSpans, shorten, modelName, panelText, span, textOf, tokens } from '../hooks/panel.js'
 import { lastCacheTtl, parseGitStatus, prefsFrom, runHudCommand } from '../hooks/parse.js'
 
 const NOW = Date.parse('2026-10-09T10:00:00Z')
@@ -142,6 +142,20 @@ describe('panel', () => {
     ])
   })
 
+  test('the header shortens a branch before it gives up the cost', () => {
+    expect(shorten('claude/campaign-mode-design-b46746', 15)).toBe('claude/…-b46746')
+    expect(shorten('main', 15)).toBe('main')
+    const items = [[{ text: '$41.66', tone: 'cost' as const }], [{ text: 'claude/campaign-mode-design-b46746', tone: 'dirty' as const, isShrinkable: true }, { text: ' ±1', tone: 'dirty' as const }]]
+    const fit = (room: number) => fitHeader(items, room, 2).map(textOf)
+    expect(fit(45)).toEqual(['$41.66', 'claude/campaign-mode-design-b46746 ±1'])
+    // 6 + 2 + 19 + 3 = 30: the name gives up exactly what was over.
+    expect(fit(30)).toEqual(['$41.66', 'claude/ca…gn-b46746 ±1'])
+    // Shortened no further than 10 characters: below that the branch goes, the cost stays.
+    expect(fit(21)).toEqual(['$41.66', 'claud…6746 ±1'])
+    expect(fit(20)).toEqual(['$41.66'])
+    expect(fit(5)).toEqual([])
+  })
+
   test('a plan window past its reset says so instead of its old figure', () => {
     const lines = buildPanel({ ...VIEW, now: NOW + 135 * MIN })
     expect(textOf(line(lines, 'five_hour').value)).toBe('reset')
@@ -221,14 +235,27 @@ describe('crt screen', () => {
     expect(screen.source).toContain(`<tspan fill="${PALETTE.dirty}">feat/hud</tspan><tspan fill="${PALETTE.dirty}"> ±3</tspan>`)
     // Three lines: a shorter screen.
     expect(screen.height).toBe(42 + 3 * 22 + 14)
-    // Narrower, the header leaves out from the left: the cost, the branch, then the status. The controls stay.
+    // Narrower, the header gives way: the branch (too short to shorten), then the cost, then the status. The controls stay.
     const header = (width: number) => {
       const source = crtScreen(lines, { width, isWorking: false, isMinimal: true, extras }).source
       return ['$2.14', 'feat/hud', 'IDLE', '▴ MAX'].filter(text => source.includes(text))
     }
-    expect(header(560)).toEqual(['feat/hud', 'IDLE', '▴ MAX'])
+    expect(header(560)).toEqual(['$2.14', 'IDLE', '▴ MAX'])
     expect(header(480)).toEqual(['IDLE', '▴ MAX'])
     expect(header(400)).toEqual(['▴ MAX'])
+  })
+
+  test('a long branch is shortened in the middle so the cost still fits', () => {
+    const repo = { branch: 'claude/campaign-mode-design-b46746', dirty: 1 }
+    const extras = headerSpans({ ...VIEW.usage, usd: 41.66 }, repo)
+    const lines = buildPanel({ ...VIEW, repo, isMinimal: true })
+    const source = crtScreen(lines, { width: 800, isWorking: true, isMinimal: true, extras }).source
+    expect(source).toContain('>$41.66</tspan>')
+    expect(source).toContain('>claude/campaign…e-design-b46746</tspan><tspan fill="#ffd166"> ±1</tspan>')
+    // Wide enough, it stays whole.
+    expect(crtScreen(lines, { width: 1000, isWorking: true, isMinimal: true, extras }).source).toContain('>claude/campaign-mode-design-b46746</tspan>')
+    // The full panel's BRANCH line is never shortened.
+    expect(textOf(line(buildPanel({ ...VIEW, repo }), 'branch').value)).toBe('claude/campaign-mode-design-b46746 ±1')
   })
 
   test('aligns the gauges in one column and escapes what it is given', () => {
