@@ -1,5 +1,7 @@
 # Claude CRT HUD Mod
 
+![The HUD's CRT screen, as the desktop app's Code tab draws it, with demo values](mods/hud/docs/hud.svg)
+
 Claude Code mods (plugins of function hooks), kept as one plugin marketplace, `claude-mods`. Each mod
 lives in `mods/<name>/` and is listed in `.claude-plugin/marketplace.json`.
 

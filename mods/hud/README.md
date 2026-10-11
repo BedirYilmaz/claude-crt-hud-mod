@@ -5,6 +5,10 @@ inspired by [hoobnn's hud](https://github.com/hoobnn/hoobnn-agent-mods/tree/main
 port of [claude-hud](https://github.com/jarrodwatts/claude-hud). This is a separate, much smaller mod
 (about 60 KB of source in six files) with no Node shims.
 
+![The HUD's CRT screen with demo values, as the desktop app's Code tab draws it: model, project, context, compact, plan usage, cache and cost](docs/hud.svg)
+
+The terminal draws the same parts as text:
+
 ```
 ▌CLAUDE HUD█               ● WORKING  [COMPACT ▸]  [✕ HIDE]
 MODEL                                      Opus 5.5 1M · xhigh
@@ -178,6 +182,7 @@ A mask switched on mid-session applies at the next git refresh (the next turn, o
 - `hooks/parse.ts`: git's porcelain output, the transcript's cache tier, and `/hud`'s arguments. Pure.
 - `types/index.d.ts`: the state contract.
 - `tests/hud.test.ts`: `claude plugin test .`
+- `docs/hud.svg`: the screen at the top, drawn by `crtScreen` from the demo values below.
 
 ## Development
 
