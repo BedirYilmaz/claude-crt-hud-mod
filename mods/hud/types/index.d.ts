@@ -7,6 +7,8 @@ export type HudPosition = 'above' | 'below'
 export type HudPrefs = {
   isVisible: boolean
   position: HudPosition
+  /** Only the context and the plan windows, the cost in the header: `▾ MIN` and `▴ MAX` switch it. */
+  isMinimal: boolean
   /** Toast thresholds in percent; empty lists are off. */
   alerts: { context: number[]; usage: number[] }
 }

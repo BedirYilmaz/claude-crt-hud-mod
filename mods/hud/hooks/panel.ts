@@ -36,6 +36,8 @@ export type View = {
   cache: HudCache
   activity: HudActivity
   now: number
+  /** Only the context and the plan windows. */
+  isMinimal?: boolean
 }
 
 /** Lines at this rank never leave: model, project, context, the first plan window. */
@@ -127,14 +129,19 @@ function modelLine(model: HudModel): Line | null {
   return { key: 'model', label: 'MODEL', value, rank: KEEP }
 }
 
+/** `main`, or `main ±3` with uncommitted paths; null outside a repository or on an unborn branch. */
+function branchSpans(repo: HudRepo): Span[] | null {
+  if (!repo?.branch) return null
+  const value = [s(repo.branch, repo.dirty > 0 ? 'dirty' : 'clean')]
+  if (repo.dirty > 0) value.push(s(` ±${repo.dirty}`, 'dirty'))
+  return value
+}
+
 function projectLines(project: string | null, repo: HudRepo): Line[] {
   if (!project) return []
   const lines: Line[] = [{ key: 'project', label: 'PROJECT', value: [s(project, 'project', true)], rank: KEEP }]
-  if (repo?.branch) {
-    const value = [s(repo.branch, repo.dirty > 0 ? 'dirty' : 'clean')]
-    if (repo.dirty > 0) value.push(s(` ±${repo.dirty}`, 'dirty'))
-    lines.push({ key: 'branch', label: 'BRANCH', value, rank: RANK.branch })
-  }
+  const branch = branchSpans(repo)
+  if (branch) lines.push({ key: 'branch', label: 'BRANCH', value: branch, rank: RANK.branch })
   return lines
 }
 
@@ -208,8 +215,21 @@ function cacheLine(cache: HudCache, now: number): Line | null {
   return { key: 'cache', label: 'CACHE', value, rank: RANK.cache, ...(isCostly ? { level: 'warn' as const } : {}) }
 }
 
+/** `$41.66`, or null where the host keeps no ledger. */
+export function costText(usage: HudUsage): string | null {
+  return usage.usd === null ? null : `$${usage.usd.toFixed(2)}`
+}
+
+/** What the minimal panel carries in its header, left of the status, left to right: the cost, then the branch. */
+export function headerSpans(usage: HudUsage, repo: HudRepo): Span[][] {
+  const cost = costText(usage)
+  const branch = branchSpans(repo)
+  return [...(cost === null ? [] : [[s(cost, 'cost')]]), ...(branch ? [branch] : [])]
+}
+
 function costLine(usage: HudUsage): Line | null {
-  return usage.usd === null ? null : { key: 'cost', label: 'COST', value: [s(`$${usage.usd.toFixed(2)}`, 'cost')], rank: RANK.cost }
+  const text = costText(usage)
+  return text === null ? null : { key: 'cost', label: 'COST', value: [s(text, 'cost')], rank: RANK.cost }
 }
 
 function runningLine(activity: HudActivity): Line | null {
@@ -223,8 +243,12 @@ function runningLine(activity: HudActivity): Line | null {
   return value.length ? { key: 'running', label: 'RUNNING', value, rank: RANK.running } : null
 }
 
-/** Who and where first, then the meters, then what runs. */
+/** Who and where first, then the meters, then what runs; minimal, the context and the plan windows alone. */
 export function buildPanel(v: View): Line[] {
+  if (v.isMinimal) {
+    const [context] = contextLines(v.usage, v.compact, v.compactRun ?? null, v.cache.tokens)
+    return [...(context ? [context] : []), ...planLines(v.usage, v.now)]
+  }
   return [
     modelLine(v.model),
     ...projectLines(v.project, v.repo),

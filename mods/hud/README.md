@@ -7,10 +7,15 @@ port of [claude-hud](https://github.com/jarrodwatts/claude-hud). This is a separ
 
 ![The HUD's CRT screen with demo values, as the desktop app's Code tab draws it: model, project, context, compact, plan usage, cache and cost](docs/hud.svg)
 
+Minimal, after a click on `▾ MIN`: the context and the plan windows, with the cost and the branch in
+the header.
+
+![The HUD's minimal CRT screen with demo values: the cost, the branch and the status in the header, then context, 5-hour and 7-day](docs/hud-min.svg)
+
 The terminal draws the same parts as text:
 
 ```
-▌CLAUDE HUD█               ● WORKING  [COMPACT ▸]  [✕ HIDE]
+▌CLAUDE HUD█       ● WORKING  [COMPACT ▸]  [▾ MIN]  [✕ HIDE]
 MODEL                                      Opus 5.5 1M · xhigh
 PROJECT                                                my-repo
 BRANCH                                                 main ±3
@@ -31,22 +36,23 @@ between them. The panel takes the full width of the band (or of the prompt, belo
   asks for reduced motion. It is drawn as an image with no size of its own: the markup is laid out a
   little wider than the band (8 px a cell, plus the engine's five reserved cells) and the desktop
   scales it down to fit, its height in proportion. An image takes no clicks, so a transparent click
-  layer (`hooks/hit.tsx`, a `Client`) lies over the screen's header, where `COMPACT ▸` and `✕ HIDE`
-  are drawn. The desktop reports exactly where across that layer a click lands, but its rows don't
-  map onto the image's pixels, so both controls share the header row and only the column decides
+  layer (`hooks/hit.tsx`, a `Client`) lies over the screen's header, where `COMPACT ▸`, `▾ MIN` and
+  `✕ HIDE` are drawn. The desktop reports exactly where across that layer a click lands, but its rows
+  don't map onto the image's pixels, so the controls share the header row and only the column decides
   which one was clicked. The desktop sizes the layer to what it draws rather than to its height, so
   it draws two empty rows to cover the whole header. It keeps one post per frame from the layer, so
   every post carries a running count of presses: a quick click still counts when the post of its
   up replaced the post of its down. If the engine reports that the layer failed, the HUD leaves
-  it out, draws native `Compact` and `Hide HUD` buttons under the screen instead, and says why in
+  it out, draws native `Compact`, `Minimal HUD` and `Hide HUD` buttons under the screen instead, and says why in
   the transcript. Nothing on the screen changes on hover.
 - **Terminal:** a dark, round-bordered box. Every other line is a shade lighter, like a scanline.
-  The gauges are `█░`. `COMPACT ▸` and `✕` are buttons: click them, or reach them with ctrl+x tab.
+  The gauges are `█░`. `COMPACT ▸`, `▾ MIN` and `✕` are buttons: click them, or reach them with
+  ctrl+x tab.
 
 The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTING` or
 `◌ COMPACT QUEUED` while a compaction runs or waits, and `○ IDLE` otherwise.
 
-### Compact and hide
+### Compact, minimal and hide
 
 - **Compact:** `COMPACT ▸` in the desktop screen's header, or the `COMPACT ▸` label on the
   terminal. A first press arms it for 5 seconds: the COMPACT line turns
@@ -62,6 +68,12 @@ The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTI
   the background (`precompute`) changes nothing on screen.
 - **While compacting:** Claude Code holds every slash command, `/hud` too, until the compaction
   ends. `✕ HIDE` still reaches the HUD then, since it is not a command.
+- **Minimal:** `▾ MIN` in the header shrinks the panel to the context and the plan windows (5-hour,
+  7-day), with the cost and the branch in the header, left of the status (`$10.17 main ±3 ○ IDLE`). The control then reads `▴ MAX`, which
+  brings everything back. On the terminal `COMPACT ▸` moves into the header, since its line is gone.
+  The choice is kept with the other settings, so the next session opens the same way; `/hud min`
+  and `/hud max` set it too. On a narrow desktop screen the header leaves out what does not fit
+  beside the title, from the left: the cost, the branch, then the status.
 - **Hide:** `✕ HIDE` in the header (desktop) or `✕` (terminal) puts the panel away for this session. `/hud`
   brings it back. A new session shows it again; `/hud off` hides it for good.
 
@@ -139,6 +151,7 @@ and the first plan window always stay.
 | `/hud on`, `/hud off` | Sets it on or off. |
 | `/hud above` | Shows it as a band above the prompt (the default). Ctrl+X Ctrl+A or `[-]` folds the band away. |
 | `/hud below` | Shows it under the prompt, above the hint line. |
+| `/hud min`, `/hud max` | Only the context and plan usage, with the cost and the branch in the header; or everything. Kept across sessions, like `▾ MIN` and `▴ MAX`. |
 | `/hud alerts` | Lists the toast thresholds. |
 | `/hud alerts context 80,90 usage 90` | Toasts once per threshold, again only after the gauge falls 5 points below it. `usage` covers the 5-hour and 7-day windows. |
 | `/hud alerts off` | Turns all toasts off. Toasts are off by default. |
@@ -159,7 +172,8 @@ app too, where `/config` isn't available.
   `Write`, `MultiEdit`, `NotebookEdit` or `Bash` call, at most once every 5 seconds. It never runs
   while the HUD is off, or when no surface is attached (`claude -p`).
 - **Runs on a press.** `/compact`, through `$.command.run`, only after the second press of the
-  compact control, and never while a compaction is queued or running. The click layer sends the
+  compact control, and never while a compaction is queued or running. `▾ MIN` and `▴ MAX` only
+  change the `prefs` key in its store. The click layer sends the
   hooks module its size, the pointer's clicks, entries and exits with where they landed, and counts
   of moves and presses; nothing else.
 - **Writes.** Its own `$.state` values (declared in `types/index.d.ts`) and keys in its own
@@ -192,7 +206,7 @@ A mask switched on mid-session applies at the next git refresh (the next turn, o
 - `hooks/parse.ts`: git's porcelain output, the transcript's cache tier, and `/hud`'s arguments. Pure.
 - `types/index.d.ts`: the state contract.
 - `tests/hud.test.ts`: `claude plugin test .`
-- `docs/hud.svg`: the screen at the top, drawn by `crtScreen` from the demo values below.
+- `docs/hud.svg`, `docs/hud-min.svg`: the full and minimal screens at the top, drawn by `crtScreen` from the demo values below.
 
 ## Development
 

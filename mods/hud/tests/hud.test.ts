@@ -4,14 +4,14 @@ import type { On, RenderElement, RenderPropsOf, SessionUsage, TurnStepInput, Tur
 import type { HudHitProps, HudPrefs } from '../types'
 import { alertsFor } from '../hooks/alerts.js'
 import { crtScreen } from '../hooks/crt.js'
-import { type Line, type View, PALETTE, buildPanel, fitPanel, modelName, panelText, span, textOf, tokens } from '../hooks/panel.js'
+import { type Line, type View, PALETTE, buildPanel, fitPanel, headerSpans, modelName, panelText, span, textOf, tokens } from '../hooks/panel.js'
 import { lastCacheTtl, parseGitStatus, prefsFrom, runHudCommand } from '../hooks/parse.js'
 
 const NOW = Date.parse('2026-10-09T10:00:00Z')
 const MIN = 60_000
 const iso = (ms: number) => new Date(ms).toISOString()
 
-const PREFS: HudPrefs = { isVisible: true, position: 'above', alerts: { context: [], usage: [] } }
+const PREFS: HudPrefs = { isVisible: true, position: 'above', isMinimal: false, alerts: { context: [], usage: [] } }
 
 const VIEW: View = {
   project: 'my-repo',
@@ -133,6 +133,15 @@ describe('panel', () => {
     expect([span(30_000), span(14 * MIN), span(125 * MIN), span(76 * 60 * MIN), span((73 * 60 + 45) * MIN)]).toEqual(['<1m', '14m', '2h05m', '3d4h', '3d2h'])
   })
 
+  test('minimal, it keeps the context and the plan windows alone', () => {
+    const lines = buildPanel({ ...VIEW, isMinimal: true })
+    expect(rows(lines)).toEqual([
+      ['CONTEXT', '38% 76k/200k'],
+      ['5-HOUR', '42% ↻2h14m'],
+      ['7-DAY', '61% ↻3d4h'],
+    ])
+  })
+
   test('a plan window past its reset says so instead of its old figure', () => {
     const lines = buildPanel({ ...VIEW, now: NOW + 135 * MIN })
     expect(textOf(line(lines, 'five_hour').value)).toBe('reset')
@@ -158,26 +167,28 @@ describe('crt screen', () => {
     expect(crtScreen(lines, { width: 600, isWorking: true }).source).toContain('● WORKING')
   })
 
-  test('puts COMPACT and HIDE side by side in the header, says where they span, and lights compact when armed', () => {
+  test('puts COMPACT, MIN and HIDE side by side in the header, says where they span, and lights compact when armed', () => {
     const lines = buildPanel(VIEW)
     const screen = crtScreen(lines, { width: 600, isWorking: false })
-    const [compact, hide] = screen.targets
-    expect(screen.targets.map(t => t.key)).toEqual(['compact', 'hide'])
-    // Right to left with no overlap, hide reaching the screen's edge, the status left of both.
+    const [compact, size, hide] = screen.targets
+    expect(screen.targets.map(t => t.key)).toEqual(['compact', 'size', 'hide'])
+    // Right to left with no overlap, hide reaching the screen's edge, the status left of them all.
     expect(hide!.right).toBe(592)
-    expect(compact!.right).toBeLessThanOrEqual(hide!.left)
+    expect(size!.right).toBeLessThanOrEqual(hide!.left)
+    expect(compact!.right).toBeLessThanOrEqual(size!.left)
     expect(compact!.right - compact!.left).toBeGreaterThan(9 * 7.8)
     const statusX = Number(/x="([\d.]+)"[^>]*>○ IDLE/.exec(screen.source)?.[1])
     expect(statusX).toBeLessThan(compact!.left)
-    expect(screen.source.match(/class="control"/g)).toHaveLength(2)
+    expect(screen.source.match(/class="control"/g)).toHaveLength(3)
     expect(screen.source).toContain('>COMPACT ▸</text>')
+    expect(screen.source).toContain('>▾ MIN</text>')
     expect(screen.source).toContain('>✕ HIDE</text>')
     expect(screen.source).not.toContain('class="lit"')
     expect(screen.source).toContain('in </tspan>')
     const armed = crtScreen(lines, { width: 600, isWorking: false, isArmed: true }).source
-    // The compact control and the COMPACT line light up; hide stays as it was.
+    // The compact control and the COMPACT line light up; min and hide stay as they were.
     expect(armed.match(/class="lit"/g)).toHaveLength(2)
-    expect(armed.match(/class="control"/g)).toHaveLength(1)
+    expect(armed.match(/class="control"/g)).toHaveLength(2)
     expect(armed).toContain('click again to compact')
     expect(armed).not.toContain('in </tspan>')
   })
@@ -189,11 +200,35 @@ describe('crt screen', () => {
     expect(running.source).not.toContain('● WORKING')
     expect(running.source).not.toContain('class="lit"')
     expect(running.source.match(/class="busy"/g)).toHaveLength(1)
-    expect(running.source.match(/class="control"/g)).toHaveLength(1)
+    expect(running.source.match(/class="control"/g)).toHaveLength(2)
     expect(running.source).toContain('compacting…')
-    expect(running.targets.map(t => t.key)).toEqual(['compact', 'hide'])
+    expect(running.targets.map(t => t.key)).toEqual(['compact', 'size', 'hide'])
     const queued = crtScreen(buildPanel({ ...VIEW, compactRun: 'queued' }), { width: 600, isWorking: false, compactRun: 'queued' })
     expect(queued.source).toContain('◌ COMPACT QUEUED')
+  })
+
+  test('minimal, it reads MAX and shows the cost and the branch left of the status, leaving out what does not fit', () => {
+    const lines = buildPanel({ ...VIEW, isMinimal: true })
+    const extras = headerSpans(VIEW.usage, VIEW.repo)
+    expect(extras.map(textOf)).toEqual(['$2.14', 'feat/hud ±3'])
+    const screen = crtScreen(lines, { width: 600, isWorking: false, isMinimal: true, extras })
+    expect(screen.source).toContain('>▴ MAX</text>')
+    expect(screen.source).not.toContain('MIN')
+    const at = (text: string) => Number(new RegExp(`x="([\\d.]+)"[^>]*>(?:<tspan[^>]*>)?${text}`).exec(screen.source)?.[1])
+    // Left to right: the cost, the branch (dirty, in its color), the status.
+    expect(at('\\$2\\.14')).toBeLessThan(at('feat/hud') - 11 * 7.8)
+    expect(at('feat/hud')).toBeLessThan(at('○ IDLE') - 6 * 7.8)
+    expect(screen.source).toContain(`<tspan fill="${PALETTE.dirty}">feat/hud</tspan><tspan fill="${PALETTE.dirty}"> ±3</tspan>`)
+    // Three lines: a shorter screen.
+    expect(screen.height).toBe(42 + 3 * 22 + 14)
+    // Narrower, the header leaves out from the left: the cost, the branch, then the status. The controls stay.
+    const header = (width: number) => {
+      const source = crtScreen(lines, { width, isWorking: false, isMinimal: true, extras }).source
+      return ['$2.14', 'feat/hud', 'IDLE', '▴ MAX'].filter(text => source.includes(text))
+    }
+    expect(header(560)).toEqual(['feat/hud', 'IDLE', '▴ MAX'])
+    expect(header(480)).toEqual(['IDLE', '▴ MAX'])
+    expect(header(400)).toEqual(['▴ MAX'])
   })
 
   test('aligns the gauges in one column and escapes what it is given', () => {
@@ -228,6 +263,13 @@ describe('parse', () => {
   test('/hud toggles, moves and sets alerts', () => {
     expect(runHudCommand('', PREFS)).toEqual({ prefs: { ...PREFS, isVisible: false }, text: 'HUD off' })
     expect(runHudCommand('below', { ...PREFS, isVisible: false }).text).toBe('HUD on, below the prompt')
+    expect(runHudCommand('min', { ...PREFS, isVisible: false })).toEqual({
+      prefs: { ...PREFS, isMinimal: true },
+      text: 'HUD on, above the prompt, minimal',
+    })
+    expect(runHudCommand('max', { ...PREFS, isMinimal: true }).prefs.isMinimal).toBe(false)
+    expect(prefsFrom({ isMinimal: true }, PREFS).isMinimal).toBe(true)
+    expect(prefsFrom({ isMinimal: 'yes' }, PREFS).isMinimal).toBe(false)
     const set = runHudCommand('alerts context 90,80 usage 95', PREFS)
     expect(set.prefs.alerts).toEqual({ context: [80, 90], usage: [95] })
     expect(set.text).toBe('Alerts: context 80%, 90% · usage 95%')
@@ -388,7 +430,7 @@ describe('in the engine', () => {
     expect(String(screen?.props.source)).toMatch(/^<svg [^>]*width="1000"/)
     const layer = await desktop.find({ key: 'hit' })
     expect(layer?.type).toBe('Client')
-    expect((layer?.props.props as HudHitProps).targets.map(t => t.key)).toEqual(['compact', 'hide'])
+    expect((layer?.props.props as HudHitProps).targets.map(t => t.key)).toEqual(['compact', 'size', 'hide'])
     // The controls are the screen's own: no buttons under it.
     expect(await desktop.find({ type: 'Button' })).toBeUndefined()
 
@@ -670,6 +712,41 @@ describe('in the engine', () => {
     await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 4000, context_tokens: 172_000, prompt_cache_likely_expired: true })
     expect((await ui.find({ type: 'Text', text: 'expired' }))?.props.color).toBe(PALETTE.warn)
     expect(await seen(ui)).toContain('CACHEexpired · re-caches 172k')
+  })
+
+  test('MIN switches to the minimal panel and becomes MAX, on either surface, and the choice is kept', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    await $.session.measure({ ...USAGE, changed: ['context', 'rateLimits', 'cost'] })
+    await clock.advance(100)
+    const run = (args: string) =>
+      $.command.run({ command: 'hud', args, origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    const source = async () => String((await desktop.find({ type: 'Svg' }))?.props.source)
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    expect(await source()).toContain('>▾ MIN</text>')
+
+    await click(desktop, 'size')
+    expect((await alt(desktop)).split('\n').map(l => l.split(' ')[0])).toEqual(['CONTEXT', '5-HOUR', '7-DAY'])
+    expect(await source()).toContain('>▴ MAX</text>')
+    expect(await source()).toMatch(/>\$2\.14<\/tspan><\/text><text[^>]*><tspan[^>]*>feat\/hud<\/tspan><tspan[^>]*> ±3<\/tspan><\/text><text[^>]*>○ IDLE</)
+    // Kept with the other settings, so the next session opens minimal too.
+    expect((await run('above')).text).toBe('HUD on, above the prompt, minimal')
+
+    const terminal = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    // The cost and the branch before the status, and compact in the header: its line is gone.
+    expect(await seen(terminal)).toContain('▌CLAUDE HUD$2.14feat/hud ±3○ IDLECONTEXT')
+    expect(await seen(terminal)).not.toContain('MODEL')
+    expect((await terminal.find({ key: 'compact' }))?.props.label).toBe('COMPACT ▸')
+    expect((await terminal.find({ key: 'size' }))?.props.label).toBe('▴ MAX')
+    await terminal.press({ key: 'size' })
+    expect(await seen(terminal)).toContain('MODEL')
+    expect(await seen(terminal)).toContain('▌CLAUDE HUD○ IDLEMODEL')
+    expect((await terminal.find({ key: 'size' }))?.props.label).toBe('▾ MIN')
+    expect(await source()).toContain('>▾ MIN</text>')
+    // Full again: nothing between the title and the status.
+    expect(await source()).toMatch(/█<\/tspan><\/text><text[^>]*>○ IDLE</)
   })
 
   test('context, cost and the compact distance move with each response, not only at the turn end', async ($, on) => {

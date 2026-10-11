@@ -54,6 +54,7 @@ export const HUD_USAGE = [
   '/hud on | off',
   '/hud above        a band above the prompt',
   '/hud below        under the prompt, beside the hint line',
+  '/hud min | max    only context and plan usage, or everything',
   '/hud alerts       show the toast thresholds',
   '/hud alerts context 80,90 usage 90',
   '/hud alerts off',
@@ -77,7 +78,8 @@ export function describeAlerts(alerts: HudPrefs['alerts']): string {
 }
 
 function describePrefs(prefs: HudPrefs): string {
-  return prefs.isVisible ? `HUD on, ${prefs.position === 'above' ? 'above' : 'below'} the prompt` : 'HUD off'
+  if (!prefs.isVisible) return 'HUD off'
+  return `HUD on, ${prefs.position === 'above' ? 'above' : 'below'} the prompt${prefs.isMinimal ? ', minimal' : ''}`
 }
 
 /** What `/hud <args>` does: the prefs it leaves (unchanged when it only reports) and the line it answers. */
@@ -94,6 +96,9 @@ export function runHudCommand(args: string, prefs: HudPrefs): { prefs: HudPrefs;
     case 'above':
     case 'below':
       return set({ ...prefs, isVisible: true, position: verb })
+    case 'min':
+    case 'max':
+      return set({ ...prefs, isVisible: true, isMinimal: verb === 'min' })
     case 'alerts': {
       if (rest.length === 0) return { prefs, text: describeAlerts(prefs.alerts) }
       if (rest.length === 1 && rest[0] === 'off') {
@@ -121,6 +126,7 @@ export function prefsFrom(stored: unknown, fallback: HudPrefs): HudPrefs {
   return {
     isVisible: typeof value.isVisible === 'boolean' ? value.isVisible : fallback.isVisible,
     position: value.position === 'above' || value.position === 'below' ? value.position : fallback.position,
+    isMinimal: typeof value.isMinimal === 'boolean' ? value.isMinimal : fallback.isMinimal,
     alerts: {
       context: numbers(value.alerts?.context) ?? fallback.alerts.context,
       usage: numbers(value.alerts?.usage) ?? fallback.alerts.usage,

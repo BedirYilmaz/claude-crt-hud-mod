@@ -21,9 +21,9 @@ import {
   runHudCommand,
 } from './parse.js'
 import { crtScreen } from './crt.js'
-import { type Line, PALETTE, TTL_MS, buildPanel, fitPanel, panelText, toolName } from './panel.js'
+import { type Line, PALETTE, type Span, TTL_MS, buildPanel, fitPanel, headerSpans, panelText, toolName } from './panel.js'
 
-const DEFAULT_PREFS: HudPrefs = { isVisible: true, position: 'above', alerts: { context: [], usage: [] } }
+const DEFAULT_PREFS: HudPrefs = { isVisible: true, position: 'above', isMinimal: false, alerts: { context: [], usage: [] } }
 const EMPTY_USAGE: HudUsage = { tokens: null, window: 0, percent: null, usd: null, limits: [] }
 const FRESH_CACHE: HudCache = { lastRequestAt: null, ttl: '5m', isTtlKnown: false, tokens: null }
 
@@ -110,6 +110,8 @@ type Host = {
   pressCompact: () => Promise<void>
   /** A press on hide: hidden for this session. */
   hide: () => Promise<void>
+  /** A press on `▾ MIN` / `▴ MAX`: switches the minimal panel, kept across sessions. */
+  toggleSize: () => Promise<void>
   /** The cache tier the transcript's latest main-thread cache write used, or null. */
   transcriptTtl: (path: string) => Promise<HudCache['ttl'] | null>
   setTtl: (ttl: HudCache['ttl']) => Promise<void>
@@ -139,7 +141,19 @@ const chars = (text: string) => [...text].length
 function drawPanel(
   ui: TerminalUi,
   lines: readonly Line[],
-  o: { columns: number; isWorking: boolean; run: HudCompactRun; indent: number; compact: RenderElement; hide: RenderElement },
+  o: {
+    columns: number
+    isWorking: boolean
+    run: HudCompactRun
+    indent: number
+    compact: RenderElement
+    size: RenderElement
+    hide: RenderElement
+    /** Minimal: the compact control in the header, since its line is gone. */
+    isMinimal: boolean
+    /** Before the status, left to right: the minimal panel's cost and branch. */
+    extras: Span[][]
+  },
 ): RenderElement {
   const { Box, Text } = ui
   const width = Math.max(MIN_COLUMNS, o.columns - o.indent)
@@ -153,9 +167,20 @@ function drawPanel(
           ▌CLAUDE HUD
         </Text>
         <Box flexDirection="row" columnGap={2}>
+          {o.extras.map((spans, i) => (
+            <Box key={`extra-${i}`} flexDirection="row">
+              {spans.map((x, k) => (
+                <Text key={`${k}`} color={PALETTE[x.tone]}>
+                  {x.text}
+                </Text>
+              ))}
+            </Box>
+          ))}
           <Text color={o.run !== null || o.isWorking ? PALETTE.warn : PALETTE.dim}>
             {o.run === 'running' ? '◌ COMPACTING' : o.run === 'queued' ? '◌ COMPACT QUEUED' : o.isWorking ? '● WORKING' : '○ IDLE'}
           </Text>
+          {o.isMinimal ? o.compact : null}
+          {o.size}
           {o.hide}
         </Box>
       </Box>
@@ -315,6 +340,11 @@ export const register: Register = on => {
       hide: async () => {
         await update($, isHidden, () => true)
         $.ui.toast('HUD hidden for this session. /hud shows it again.')
+      },
+      toggleSize: async () => {
+        const now = { ...(await read($, prefs)), isMinimal: !(await read($, prefs)).isMinimal }
+        await update($, prefs, () => now)
+        await $.store.set(STORE_PREFS, now)
       },
       transcriptTtl: async path => {
         const stat = await $.fs.stat(path).catch(() => null)
@@ -519,7 +549,7 @@ export const register: Register = on => {
     // Hidden by its hide control: `/hud`, `on`, `above` or `below` bring it back.
     const verb = e.args.trim().toLowerCase()
     if (verb === 'debug') return { text: describeProbe(probe).join('\n') }
-    const isShowing = (await read($, isHidden)) && ['', 'on', 'above', 'below'].includes(verb)
+    const isShowing = (await read($, isHidden)) && ['', 'on', 'above', 'below', 'min', 'max'].includes(verb)
     if (isShowing) await update($, isHidden, () => false)
     const { prefs: now, text } = runHudCommand(isShowing && verb === '' ? 'on' : e.args, was)
     if (JSON.stringify(now) !== JSON.stringify(was)) {
@@ -548,6 +578,7 @@ export const register: Register = on => {
       await $.store.set(STORE_DEBUG, describeProbe(probe)).catch(() => {})
       if (isPress && m.pressed === 'compact') await host?.pressCompact()
       if (isPress && m.pressed === 'hide') await host?.hide()
+      if (isPress && m.pressed === 'size') await host?.toggleSize()
     }
     return next(e)
   })
@@ -572,17 +603,21 @@ export const register: Register = on => {
     const width = e.component === 'AbovePrompt' ? e.props.bodyColumns : e.viewport?.columns
     await read($, tick)
     const now = await $.clock.now()
+    const used = await read($, usage)
+    const where = await read($, repo)
     const all = buildPanel({
       project: await read($, project),
-      repo: await read($, repo),
-      usage: await read($, usage),
+      repo: where,
+      usage: used,
       model: await read($, model),
       compact: await read($, compact),
       compactRun: await read($, compactRun),
       cache: await read($, cache),
       activity: await read($, activity),
       now,
+      isMinimal: p.isMinimal,
     })
+    const extras = p.isMinimal ? headerSpans(used, where) : []
     const rest = await next(e)
     if (all.length === 0) return rest
 
@@ -595,7 +630,14 @@ export const register: Register = on => {
     if (e.surface === 'desktop') {
       const { Box, Button, Client, Svg } = $.ui.resolve(e)
       const columns = (width ?? 100) + (isAbove ? ENGINE_COLUMNS : 0)
-      const screen = crtScreen(all, { width: Math.max(MIN_SCREEN_PX, columns * DESKTOP_CELL_PX), isWorking, isArmed, compactRun: run })
+      const screen = crtScreen(all, {
+        width: Math.max(MIN_SCREEN_PX, columns * DESKTOP_CELL_PX),
+        isWorking,
+        isArmed,
+        compactRun: run,
+        isMinimal: p.isMinimal,
+        extras,
+      })
       const hit: HudHitProps = { width: screen.width, rows: HIT_ROWS, targets: screen.targets }
       probe.screen = hit
       // An image with no size of its own: the desktop draws it as wide as the band, its height in proportion.
@@ -619,6 +661,7 @@ export const register: Register = on => {
                 label={run === 'running' ? 'Compacting…' : run === 'queued' ? 'Compact queued' : isArmed ? 'Click again to compact' : 'Compact'}
                 onPress={() => host?.pressCompact()}
               />
+              <Button key="size" variant="secondary" label={p.isMinimal ? 'Full HUD' : 'Minimal HUD'} onPress={() => host?.toggleSize()} />
               <Button key="hide" role="dismiss" label="Hide HUD" onPress={() => host?.hide()} />
             </Box>
           ) : null}
@@ -637,10 +680,12 @@ export const register: Register = on => {
       ) : (
         <Text color={PALETTE.dim}>COMPACT ◌</Text>
       )
+    const sizeButton = <Button key="size" plain label={p.isMinimal ? '▴ MAX' : '▾ MIN'} onPress={() => host?.toggleSize()} />
     const hideButton = <Button key="hide" plain label="✕" onPress={() => host?.hide()} />
+    const o = { columns: width ?? 80, isWorking, run, indent, isMinimal: p.isMinimal, extras }
     return (
       <Box flexDirection="column">
-        {drawPanel({ Box, Text }, lines, { columns: width ?? 80, isWorking, run, indent, compact: compactButton, hide: hideButton })}
+        {drawPanel({ Box, Text }, lines, { ...o, compact: compactButton, size: sizeButton, hide: hideButton })}
         {rest}
       </Box>
     )

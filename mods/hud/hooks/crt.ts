@@ -1,7 +1,7 @@
 // The panel as a CRT screen for the desktop app: an SVG with a dark glass,
 // phosphor glow, scanlines, a vignette and a slow rolling scan band. Labels sit
 // left, values flush right, gauges as segmented bars aligned between them.
-// `COMPACT ▸` and `✕ HIDE` are outlined controls in the header, and the screen
+// `COMPACT ▸`, `▾ MIN` (`▴ MAX` when minimal) and `✕ HIDE` are outlined controls in the header, and the screen
 // says where they are across it (`targets`): it is an image, so hit.tsx, a
 // click layer over the header alone, turns clicks there into presses. The
 // desktop reports where a click lands across that layer exactly, but not how
@@ -26,6 +26,9 @@ const HEAD_Y = 25
 const CONTROL_GAP = 22
 const HIDE = '✕ HIDE'
 const COMPACT = 'COMPACT ▸'
+const MIN = '▾ MIN'
+const MAX = '▴ MAX'
+const TITLE = '▌CLAUDE HUD█'
 
 export type Screen = { source: string; width: number; height: number; targets: HudHitTarget[] }
 
@@ -37,6 +40,10 @@ export type ScreenOptions = {
   isArmed?: boolean
   /** A /compact queued or running: the control rests dim. */
   compactRun?: HudCompactRun
+  /** Minimal: the size control reads `▴ MAX`. */
+  isMinimal?: boolean
+  /** Drawn in the header left of the status, left to right: the minimal screen's cost and branch. */
+  extras?: Span[][]
 }
 
 const esc = (text: string) => text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
@@ -123,21 +130,40 @@ export function crtScreen(lines: readonly Line[], options: ScreenOptions): Scree
     })
     .join('')
 
-  // Right to left: hide, compact, then the status. Each target is its outline and half the gap beside it.
-  const hideLeft = right - chars(HIDE) * CHAR - 6
-  const compactEnd = hideLeft - CONTROL_GAP
-  const compactLeft = compactEnd - chars(COMPACT) * CHAR - 6
+  // Right to left: hide, size, compact, then the status and the cost. Each target is its outline and half the gap beside it.
+  const size = options.isMinimal ? MAX : MIN
   const half = (CONTROL_GAP - 6) / 2
+  const hideLeft = right - chars(HIDE) * CHAR - 6
+  const sizeEnd = hideLeft - CONTROL_GAP
+  const sizeLeft = sizeEnd - chars(size) * CHAR - 6
+  const compactEnd = sizeLeft - CONTROL_GAP
+  const compactLeft = compactEnd - chars(COMPACT) * CHAR - 6
   targets.push({ key: 'compact', left: px(compactLeft - half), right: px(compactEnd + 6 + half) })
+  targets.push({ key: 'size', left: px(sizeLeft - half), right: px(sizeEnd + 6 + half) })
   targets.push({ key: 'hide', left: px(hideLeft - half), right: W - 8 })
-  const statusX = px(compactLeft - 2 * CHAR)
+  // What does not fit beside the title is left out, from the left: the cost, the branch, then the status.
+  const titleEnd = PAD_X + (chars(TITLE) + 2) * CHAR
   const run = options.compactRun ?? null
-  const status =
+  const [statusText, statusColor, isBlinking] =
     run !== null
-      ? `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.warn}" class="blink">◌ ${run === 'running' ? 'COMPACTING' : 'COMPACT QUEUED'}</text>`
+      ? [`◌ ${run === 'running' ? 'COMPACTING' : 'COMPACT QUEUED'}`, PALETTE.warn, true]
       : options.isWorking
-        ? `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.warn}" class="blink">● WORKING</text>`
-        : `<text x="${statusX}" y="${HEAD_Y}" text-anchor="end" fill="${PALETTE.dim}">○ IDLE</text>`
+        ? ['● WORKING', PALETTE.warn, true]
+        : ['○ IDLE', PALETTE.dim, false]
+  const statusX = compactLeft - 2 * CHAR
+  const statusLeft = statusX - chars(statusText) * CHAR
+  const status =
+    statusLeft < titleEnd
+      ? ''
+      : `<text x="${px(statusX)}" y="${HEAD_Y}" text-anchor="end" fill="${statusColor}"${isBlinking ? ' class="blink"' : ''}>${esc(statusText)}</text>`
+  let extras = ''
+  let extraX = statusLeft - 2 * CHAR
+  for (const spans of status ? [...(options.extras ?? [])].reverse() : []) {
+    const left = extraX - chars(textOf(spans)) * CHAR
+    if (left < titleEnd) break
+    extras = `<text x="${px(extraX)}" y="${HEAD_Y}" text-anchor="end">${spans.map(tspan).join('')}</text>` + extras
+    extraX = left - 2 * CHAR
+  }
   const compactLook: Look = run !== null ? 'busy' : options.isArmed ? 'lit' : 'control'
 
   const source =
@@ -156,8 +182,10 @@ export function crtScreen(lines: readonly Line[], options: ScreenOptions): Scree
     '<g clip-path="url(#hud-screen)">' +
     '<g class="flicker" filter="url(#hud-glow)">' +
     `<text x="${PAD_X}" y="${HEAD_Y}" fill="${PALETTE.label}" font-weight="700">▌CLAUDE HUD<tspan class="blink">█</tspan></text>` +
+    extras +
     status +
     control(COMPACT, compactEnd, compactLook) +
+    control(size, sizeEnd) +
     control(HIDE, right) +
     `<line x1="${PAD_X}" y1="33" x2="${right}" y2="33" stroke="${PALETTE.dim}" stroke-dasharray="2 4"/>` +
     rows +
