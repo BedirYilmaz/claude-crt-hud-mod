@@ -1,5 +1,5 @@
 import { type MockClock, type Mounted, describe, expect, mock, test } from 'claude-code/testing'
-import type { On, RenderElement, RenderPropsOf, SessionUsage, TurnStepResult } from 'claude-code'
+import type { On, RenderElement, RenderPropsOf, SessionUsage, TurnStepInput, TurnStepResult } from 'claude-code'
 
 import type { HudHitProps, HudPrefs } from '../types'
 import { alertsFor } from '../hooks/alerts.js'
@@ -600,6 +600,34 @@ describe('in the engine', () => {
     expect(await seen(ui)).toContain('CACHE~5m')
     await clock.advance(5 * MIN + 2_000)
     expect(await seen(ui)).toContain('CACHEexpired · re-caches 76k')
+  })
+
+  test('the effort follows each request as it goes out, so a switch never leaves the old level', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    world(on)
+    let ui: Drawing | undefined
+    const during: string[] = []
+    on('turn.step', async function* (_$, e) {
+      if (ui) during.push(await seen(ui))
+      const result: TurnStepResult = { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as TurnStepResult['stopReason'], usage: { input_tokens: 1, output_tokens: 1, cache_read_input_tokens: 0, cache_creation_input_tokens: 0, model: e.model } }
+      return result
+    })
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    ui = await $.ui.mount({ plugin: 'hud', surface: 'terminal', component: 'AbovePrompt', props: BAND })
+    const step = async (index: number, effort?: TurnStepInput['effort']) => {
+      const stream = $.turn.step({ turnId: 't1', index, model: 'claude-opus-5-5', ...(effort ? { effort } : {}), messageCount: 2 })
+      for await (const chunk of stream) void chunk
+      await stream.result
+    }
+    await step(0, 'xhigh')
+    expect(during[0]).toContain('Opus 5.5 · xhigh')
+    expect(await seen(ui)).toContain('Opus 5.5 · xhigh')
+    await step(1, 'medium')
+    expect(during[1]).toContain('Opus 5.5 · medium')
+    expect(await seen(ui)).toContain('Opus 5.5 · medium')
+    await step(2)
+    expect(await seen(ui)).not.toContain('medium')
+    expect(await seen(ui)).not.toContain('xhigh')
   })
 
   test('a resumed session shows at once whether its cache outlived the pause', async ($, on) => {

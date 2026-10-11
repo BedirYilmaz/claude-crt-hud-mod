@@ -83,7 +83,7 @@ one place, `PALETTE` in `hooks/panel.ts`:
 
 | Line | Source |
 | --- | --- |
-| `MODEL` | The last main-thread request (`turn.step`); before the first request, `$.session.model()` and `effortLevel` from settings. |
+| `MODEL` | The last main-thread request (`turn.step`) as it goes out, with its own effort (none shown when it sends none). No event reports a switch, so one made while Claude is idle shows with the next request. Before the first request, `$.session.model()` and `effortLevel` from settings. |
 | `PROJECT`, `BRANCH` with `±` uncommitted paths | The project is the repository root's name (the main tree's name for a worktree), else the directory's. The branch and count come from `git --no-optional-locks status --porcelain=v2 --branch`. |
 | `CONTEXT` | `$.session.usage()` and the `session.measure` pushes. |
 | `COMPACT` | The tokens left before auto-compaction (`in 594k`). The engine's own threshold comes from `usage({ breakdown: 'summary' })`, a local estimate that sends no request, read at load and again only when the window changes. Right after a compaction, before the context is measured again, it shows the threshold (`at 920k`); with auto-compaction off, `auto off`. The line always shows, since it carries the compact control. |

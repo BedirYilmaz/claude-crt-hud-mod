@@ -356,10 +356,15 @@ export const register: Register = on => {
   // Each main-thread request restarts the prompt cache's clock.
   on('turn.step', async function* ($, e, next) {
     const startedAt = await $.clock.now()
-    const result = yield* next(e)
+    // No event says the model or effort changed: the first request after a switch is the
+    // earliest the HUD can know, so it shows them as that request goes out. Its own effort,
+    // or none: an earlier level would outlive a switch to a default.
     if (e.agentId === undefined) {
       const effort = e.effort === undefined ? null : String(e.effort)
-      await update($, model, m => ({ id: e.model, effort: effort ?? m.effort }))
+      await update($, model, () => ({ id: e.model, effort }))
+    }
+    const result = yield* next(e)
+    if (e.agentId === undefined) {
       const used = result.usage
       if (used) {
         const sent = used.input_tokens + used.cache_read_input_tokens + used.cache_creation_input_tokens + used.output_tokens
