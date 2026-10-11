@@ -108,6 +108,16 @@ and the first plan window always stay.
   the transcript.
 - **Model switch.** It forfeits the cache, so the HUD shows it as expired until the next request.
 
+## Known limitations
+
+- **A model or effort switch shows late.** Claude Code tells a mod nothing when you pick another
+  model or effort level, and gives it no way to read the effort while Claude is idle. The HUD learns
+  both from the next request Claude sends, so after a switch it shows the old values until Claude
+  starts working again. The model alone could be polled, but then a switch would show the new model
+  beside the old effort, so the HUD keeps both on the request.
+- **`/hud` waits during a compaction.** Claude Code holds every slash command until a compaction
+  ends. `✕ HIDE` on the screen still works then, since it is not a command.
+
 ## Commands
 
 | Command | Effect |
