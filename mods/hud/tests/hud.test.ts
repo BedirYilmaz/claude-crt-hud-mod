@@ -316,6 +316,12 @@ async function pointAt(ui: Mounted<'desktop', 'AbovePrompt'>, key: string, type:
   await ui.pointer(type === 'down' || type === 'up' ? { type, x, y: row, button: 'left', in: 'hit' } : { type, x, y: row, in: 'hit' })
 }
 
+/** A click on a control of the screen: a down and an up over it, through the click layer. */
+async function click(ui: Mounted<'desktop', 'AbovePrompt'>, key: string, row = 0) {
+  await pointAt(ui, key, 'down', row)
+  await pointAt(ui, key, 'up', row)
+}
+
 describe('in the engine', () => {
   test('a full-width dark panel on the terminal, a full-width CRT screen on the desktop, and git stays read-only', async ($, on) => {
     const clock = mock.clock(on, { now: NOW })
@@ -347,8 +353,8 @@ describe('in the engine', () => {
     const layer = await desktop.find({ key: 'hit' })
     expect(layer?.type).toBe('Client')
     expect((layer?.props.props as HudHitProps).targets.map(t => t.key)).toEqual(['compact', 'hide'])
-    expect((await desktop.find({ key: 'compact' }))?.props).toMatchObject({ label: 'Compact', variant: 'secondary' })
-    expect((await desktop.find({ key: 'hide' }))?.props).toMatchObject({ label: 'Hide HUD', role: 'dismiss' })
+    // The controls are the screen's own: no buttons under it.
+    expect(await desktop.find({ type: 'Button' })).toBeUndefined()
 
     expect(gitCalls).toEqual([['git', '--no-optional-locks', 'status', '--porcelain=v2', '--branch']])
   })
@@ -374,21 +380,6 @@ describe('in the engine', () => {
 
     const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
     const source = async () => String((await desktop.find({ type: 'Svg' }))?.props.source)
-    await clock.advance(600)
-    await desktop.press({ key: 'compact' })
-    expect(await source()).toContain('click again to compact')
-    expect((await desktop.find({ key: 'compact' }))?.props).toMatchObject({ label: 'Click again to compact', variant: 'primary' })
-    expect(commands).toEqual(['compact'])
-    // A double-click is not a confirmation.
-    await clock.advance(100)
-    await desktop.press({ key: 'compact' })
-    expect(commands).toEqual(['compact'])
-    await clock.advance(500)
-    await desktop.press({ key: 'compact' })
-    expect(commands).toEqual(['compact', 'compact'])
-    expect(await source()).not.toContain('click again to compact')
-    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compact')
-
     // The COMPACT label on the screen, through the click layer: a click is a down and an up, one press.
     await desktop.resize({ ...LAYER, in: 'hit' })
     await clock.advance(600)
@@ -397,16 +388,21 @@ describe('in the engine', () => {
     await pointAt(desktop, 'compact', 'down')
     await pointAt(desktop, 'compact', 'up')
     expect(await source()).toContain('click again to compact')
-    expect(commands).toEqual(['compact', 'compact'])
+    expect(commands).toEqual(['compact'])
+    // A double-click is not a confirmation.
+    await clock.advance(100)
+    await click(desktop, 'compact')
+    expect(commands).toEqual(['compact'])
     // The header's second row is the same control: only the column counts.
-    await clock.advance(600)
+    await clock.advance(500)
     await pointAt(desktop, 'compact', 'down', 1)
-    expect(commands).toEqual(['compact', 'compact', 'compact'])
+    expect(commands).toEqual(['compact', 'compact'])
+    expect(await source()).not.toContain('click again to compact')
     const debug = String(
       (await $.command.run({ command: 'hud', args: 'debug', origin: { kind: 'composer' }, presentation: { isFullscreen: false, columns: 120 } })).text,
     )
     expect(debug).toContain('Screen 1000 px wide')
-    expect(debug).toContain(`Click layer: running, ${LAYER.columns}×${LAYER.rows} cells, 1 pointer moves and 2 presses seen.`)
+    expect(debug).toContain(`Click layer: running, ${LAYER.columns}×${LAYER.rows} cells, 1 pointer moves and 3 presses seen.`)
     expect(debug).toContain('Faults: none.')
     expect(debug).toMatch(/enter at \d+,0 of 125×2\n/)
     expect(debug).toMatch(/down at \d+,0 of 125×2 \(left\) → compact, pressed/)
@@ -455,19 +451,18 @@ describe('in the engine', () => {
     }
 
     // Confirmed while Claude works: /compact waits its turn, and presses meanwhile queue nothing more.
-    await desktop.press({ key: 'compact' })
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    await click(desktop, 'compact')
     await clock.advance(600)
-    await desktop.press({ key: 'compact' })
+    await click(desktop, 'compact')
     expect(commands).toEqual(['compact'])
     expect(await screen()).toContain('◌ COMPACT QUEUED')
     expect(await screen()).toContain('COMPACT queued · runs when idle')
-    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compact queued')
     expect(await terminal.find({ key: 'compact' })).toBeUndefined()
     expect(await seen(terminal)).toContain('COMPACT ◌')
-    await desktop.press({ key: 'compact' })
+    await click(desktop, 'compact')
     await clock.advance(600)
-    await desktop.press({ key: 'compact' })
-    await desktop.resize({ ...LAYER, in: 'hit' })
+    await click(desktop, 'compact')
     await pointAt(desktop, 'compact', 'down')
     expect(commands).toEqual(['compact'])
     expect(toasts).toEqual(Array(3).fill('/compact is queued: it runs when Claude is idle.'))
@@ -481,7 +476,6 @@ describe('in the engine', () => {
     await clock.advance(100)
     expect(await screen()).toContain('◌ COMPACTING')
     expect(await screen()).toContain('COMPACT compacting…')
-    expect((await desktop.find({ key: 'compact' }))?.props.label).toBe('Compacting…')
     await clock.advance(600)
     await pointAt(desktop, 'compact', 'down')
     expect(commands).toEqual(['compact'])
@@ -505,7 +499,7 @@ describe('in the engine', () => {
     await $.session.measure({ ...USAGE, context: { window: 200_000 }, changed: ['context'] })
     const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
     expect(String((await desktop.find({ type: 'Svg' }))?.props.alt)).toContain('COMPACT at 160k')
-    expect(await desktop.find({ key: 'compact' })).toBeDefined()
+    expect(((await desktop.find({ key: 'hit' }))?.props.props as HudHitProps).targets.map(t => t.key)).toContain('compact')
   })
 
   test('hide puts the panel away for the session; /hud brings it back', async ($, on) => {
@@ -521,14 +515,14 @@ describe('in the engine', () => {
     expect((await run('')).text).toBe('HUD on, above the prompt')
     expect(await seen(terminal)).toContain('CLAUDE HUD')
 
+    // `✕ HIDE` on the screen, through the click layer, on either row of the header.
     const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
-    await desktop.press({ key: 'hide' })
+    await desktop.resize({ ...LAYER, in: 'hit' })
+    await pointAt(desktop, 'hide', 'down')
     expect(await desktop.find({ type: 'Svg' })).toBeUndefined()
     expect(await seen(terminal)).not.toContain('CLAUDE HUD')
     expect((await run('on')).text).toBe('HUD on, above the prompt')
     expect(await desktop.find({ type: 'Svg' })).toBeDefined()
-
-    // `✕ HIDE` on the screen, through the click layer.
     await desktop.resize({ ...LAYER, in: 'hit' })
     await pointAt(desktop, 'hide', 'down', 1)
     expect(await desktop.find({ type: 'Svg' })).toBeUndefined()

@@ -43,7 +43,7 @@ const isHidden = atom({ plugin: 'hud', key: 'isHidden' } as const, false)
 
 const STORE_PREFS = 'prefs'
 const STORE_TTL = 'ttl'
-/** What the click layer has reported (`/hud debug`), kept while the in-screen controls are on trial. */
+/** What the click layer has reported, for `/hud debug`. */
 const STORE_DEBUG = 'debug'
 
 /** git runs at most this often; changes inside the gap are picked up at its end. */
@@ -513,7 +513,7 @@ export const register: Register = on => {
     return next(e)
   })
 
-  // The click layer failed on a surface: leave it out from now on (the native buttons stay), and say why.
+  // The click layer failed on a surface: leave it out from now on, draw native buttons instead, and say why.
   on('ui.fault', async ($, e, next) => {
     if (e.element === 'hit') {
       isLayerBroken = true
@@ -561,7 +561,7 @@ export const register: Register = on => {
       probe.screen = hit
       // An image with no size of its own: the desktop draws it as wide as the band, its height in proportion.
       // An image takes no presses: a transparent click layer over its header hits the controls drawn there.
-      // On trial: the native buttons under it stay until the layer is known to work on the desktop.
+      // Should the layer fail, native buttons under the screen take its place.
       return (
         <Box flexDirection="column">
           <Box position="relative" flexDirection="column">
@@ -572,15 +572,17 @@ export const register: Register = on => {
               </Box>
             )}
           </Box>
-          <Box flexDirection="row" justifyContent="flex-end" columnGap={1}>
-            <Button
-              key="compact"
-              variant={isArmed ? 'primary' : 'secondary'}
-              label={run === 'running' ? 'Compacting…' : run === 'queued' ? 'Compact queued' : isArmed ? 'Click again to compact' : 'Compact'}
-              onPress={() => host?.pressCompact()}
-            />
-            <Button key="hide" role="dismiss" label="Hide HUD" onPress={() => host?.hide()} />
-          </Box>
+          {isLayerBroken ? (
+            <Box flexDirection="row" justifyContent="flex-end" columnGap={1}>
+              <Button
+                key="compact"
+                variant={isArmed ? 'primary' : 'secondary'}
+                label={run === 'running' ? 'Compacting…' : run === 'queued' ? 'Compact queued' : isArmed ? 'Click again to compact' : 'Compact'}
+                onPress={() => host?.pressCompact()}
+              />
+              <Button key="hide" role="dismiss" label="Hide HUD" onPress={() => host?.hide()} />
+            </Box>
+          ) : null}
           {rest}
         </Box>
       )

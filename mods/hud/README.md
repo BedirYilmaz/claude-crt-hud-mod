@@ -17,7 +17,6 @@ COMPACT                                                in 594k
 CACHE                                                      57m
 COST                                                    $10.17
 RUNNING                                         Bash · 1 agent
-                                       [ Compact ]  [ Hide HUD ]
 ```
 
 One line per part: the label on the left, the value flush right, and the gauges in one column
@@ -34,10 +33,9 @@ between them. The panel takes the full width of the band (or of the prompt, belo
   which one was clicked. The desktop sizes the layer to what it draws rather than to its height, so
   it draws two empty rows to cover the whole header. It keeps one post per frame from the layer, so
   every post carries a running count of presses: a quick click still counts when the post of its
-  up replaced the post of its down. The layer is on
-  trial: native `Compact` and `Hide HUD` buttons stay under the screen until it is known to work in
-  the desktop app, and if the engine reports that the layer failed, the HUD leaves it out and says
-  why in the transcript. Nothing on the screen changes on hover.
+  up replaced the post of its down. If the engine reports that the layer failed, the HUD leaves
+  it out, draws native `Compact` and `Hide HUD` buttons under the screen instead, and says why in
+  the transcript. Nothing on the screen changes on hover.
 - **Terminal:** a dark, round-bordered box. Every other line is a shade lighter, like a scanline.
   The gauges are `█░`. `COMPACT ▸` and `✕` are buttons: click them, or reach them with ctrl+x tab.
 
@@ -46,10 +44,10 @@ The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTI
 
 ### Compact and hide
 
-- **Compact:** `COMPACT ▸` in the desktop screen's header or the `Compact` button under it, or the
-  `COMPACT ▸` label on the terminal. A first press arms it for 5 seconds: the COMPACT line turns
-  amber and reads `click again to compact`, and the control turns amber (`Click again to compact`
-  on the desktop button, `CONFIRM ▸` on the terminal). A second press in that
+- **Compact:** `COMPACT ▸` in the desktop screen's header, or the `COMPACT ▸` label on the
+  terminal. A first press arms it for 5 seconds: the COMPACT line turns
+  amber and reads `click again to compact`, and the control turns amber (`CONFIRM ▸` on the
+  terminal). A second press in that
   time runs `/compact`, exactly as if you had typed it: it shows in the transcript and waits until
   the session is idle. The two presses guard against a stray click, since a compaction cannot be
   undone; a double-click (two presses within 0.4 s) counts as one.
@@ -60,7 +58,7 @@ The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTI
   the background (`precompute`) changes nothing on screen.
 - **While compacting:** Claude Code holds every slash command, `/hud` too, until the compaction
   ends. `✕ HIDE` still reaches the HUD then, since it is not a command.
-- **Hide:** `✕ HIDE` in the header or the `Hide HUD` button (desktop), or `✕` (terminal), puts the panel away for this session. `/hud`
+- **Hide:** `✕ HIDE` in the header (desktop) or `✕` (terminal) puts the panel away for this session. `/hud`
   brings it back. A new session shows it again; `/hud off` hides it for good.
 
 ### Colors
@@ -141,8 +139,8 @@ app too, where `/config` isn't available.
   hooks module its size, the pointer's clicks, entries and exits with where they landed, and counts
   of moves and presses; nothing else.
 - **Writes.** Its own `$.state` values (declared in `types/index.d.ts`) and keys in its own
-  `$.store`: `prefs`, `ttl`, and, while the click layer is on trial, `debug` (what `/hud debug`
-  shows). It writes no files.
+  `$.store`: `prefs`, `ttl`, and `debug` (what the click layer reported, which
+  `/hud debug` shows). It writes no files.
 - **Never.** No model calls, no network, no `$.fs.write`, and no edits to settings. It refuses or
   rewrites nothing: each hook at a gating site passes through, and a `.catch` passes the event on if
   the HUD itself fails.
