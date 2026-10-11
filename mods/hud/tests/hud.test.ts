@@ -130,7 +130,20 @@ describe('panel', () => {
     expect(modelName('claude-fable-5-1')).toBe('Fable 5.1')
     expect(modelName('claude-sonnet-5-5[1m]')).toBe('Sonnet 5.5 1M')
     expect([tokens(850), tokens(8_400), tokens(999_600), tokens(1_000_000)]).toEqual(['850', '8.4k', '1M', '1M'])
-    expect([span(30_000), span(14 * MIN), span(125 * MIN), span(76 * 60 * MIN)]).toEqual(['<1m', '14m', '2h05m', '3d4h'])
+    expect([span(30_000), span(14 * MIN), span(125 * MIN), span(76 * 60 * MIN), span((73 * 60 + 45) * MIN)]).toEqual(['<1m', '14m', '2h05m', '3d4h', '3d2h'])
+  })
+
+  test('a plan window past its reset says so instead of its old figure', () => {
+    const lines = buildPanel({ ...VIEW, now: NOW + 135 * MIN })
+    expect(textOf(line(lines, 'five_hour').value)).toBe('reset')
+    expect(line(lines, 'five_hour').gauge?.percent).toBe(0)
+    expect(textOf(line(lines, 'seven_day').value)).toBe('61% ↻3d2h')
+  })
+
+  test('the compact distance counts what the next request sends, the last output too', () => {
+    expect(textOf(line(buildPanel(VIEW), 'compact').value)).toBe('in 84k')
+    expect(textOf(line(buildPanel({ ...VIEW, cache: { ...VIEW.cache, tokens: 90_000 } }), 'compact').value)).toBe('in 70k')
+    expect(textOf(line(buildPanel({ ...VIEW, cache: { ...VIEW.cache, tokens: null } }), 'compact').value)).toBe('in 84k')
   })
 })
 
@@ -263,10 +276,12 @@ const USAGE: SessionUsage = {
  * to go idle, and a compaction takes `compactMs`.
  */
 function world(on: On, gitCalls: string[][] = [], commands: string[] = [], timing?: { clock: MockClock; queuedMs: number; compactMs: number }) {
+  let live: SessionUsage = USAGE
   mock.store(on)
   on('session.start', ($, e) => ({ cwd: e.cwd }))
   on('session.measure', ($, e) => ({ changed: e.changed }))
   on('classic.SessionStart', () => ({}))
+  on('classic.Stop', () => ({}))
   on('command.register', ($, e) => ({ value: { command: e.name } }))
   on('command.run', { command: 'compact' }, async ($, e) => {
     commands.push(e.command)
@@ -281,8 +296,8 @@ function world(on: On, gitCalls: string[][] = [], commands: string[] = [], timin
   on('ui.render', ($, e) =>
     (e.component === 'PromptHint' ? h('Text', { dimColor: true }, e.props.hint) : h('Box', {})) as RenderElement,
   )
-  const withBreakdown = { ...USAGE, context: { ...USAGE.context, breakdown: { isAutoCompactEnabled: true, autoCompactThreshold: 160_000 } } }
-  on('session.usage', ($, e) => ({ value: (e.breakdown ? withBreakdown : USAGE) as SessionUsage }))
+  const breakdown = { isAutoCompactEnabled: true, autoCompactThreshold: 160_000 }
+  on('session.usage', ($, e) => ({ value: (e.breakdown ? { ...live, context: { ...live.context, breakdown } } : live) as SessionUsage }))
   on('session.model', () => ({ value: 'claude-opus-5-5' }))
   on('settings.read', () => ({ value: { effortLevel: 'high' } }))
   on('session.surfaces', () => ({ value: ['terminal' as const] }))
@@ -293,6 +308,27 @@ function world(on: On, gitCalls: string[][] = [], commands: string[] = [], timin
     gitCalls.push([...e.argv])
     return { value: { exitCode: 0, stdout: GIT, stderr: '', isStdoutTruncated: false, isStderrTruncated: false } }
   })
+  /** What `$.session.usage()` answers from now on, as the engine's figures move. */
+  return { setUsage: (u: SessionUsage) => void (live = u) }
+}
+
+/** One main-thread response with these token counts. */
+function answering(on: On, used: { input: number; read: number; written: number; output: number }) {
+  on('turn.step', async function* (_$, e) {
+    const usage = { input_tokens: used.input, cache_read_input_tokens: used.read, cache_creation_input_tokens: used.written, output_tokens: used.output, model: e.model }
+    const result: TurnStepResult = { turnId: e.turnId, index: e.index, answer: '', toolUses: [], stopReason: 'end_turn' as TurnStepResult['stopReason'], usage }
+    return result
+  })
+}
+
+async function step($: { turn: { step: (input: TurnStepInput) => AsyncIterable<unknown> & { result: Promise<TurnStepResult> } } }, index = 0) {
+  const stream = $.turn.step({ turnId: 't1', index, model: 'claude-opus-5-5', effort: 'high', messageCount: 2 })
+  for await (const chunk of stream) void chunk
+  await stream.result
+}
+
+async function alt(ui: Mounted<'desktop', 'AbovePrompt'>): Promise<string> {
+  return String((await ui.find({ type: 'Svg' }))?.props.alt)
 }
 
 type Found = { text: string; props: Record<string, unknown> }
@@ -634,6 +670,65 @@ describe('in the engine', () => {
     await $.classic.SessionStart({ source: 'resume', seconds_since_last_response: 4000, context_tokens: 172_000, prompt_cache_likely_expired: true })
     expect((await ui.find({ type: 'Text', text: 'expired' }))?.props.color).toBe(PALETTE.warn)
     expect(await seen(ui)).toContain('CACHEexpired · re-caches 172k')
+  })
+
+  test('context, cost and the compact distance move with each response, not only at the turn end', async ($, on) => {
+    mock.clock(on, { now: NOW })
+    const { setUsage } = world(on)
+    answering(on, { input: 2, read: 100_000, written: 10_000, output: 6_000 })
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    await $.session.measure({ ...USAGE, changed: ['context', 'rateLimits', 'cost'] })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    expect(await alt(desktop)).toContain('CONTEXT [38%] 38% 76k/200k')
+    setUsage({ ...USAGE, context: { window: 200_000, tokens: 110_002, percent: 55 }, cost: { usd: 3.5 } })
+    await step($)
+    expect(await alt(desktop)).toContain('CONTEXT [55%] 55% 110k/200k')
+    expect(await alt(desktop)).toContain('COST $3.50')
+    // Auto-compaction counts the response's output too: 160k less 116k.
+    expect(await alt(desktop)).toContain('COMPACT in 44k')
+  })
+
+  test('the cache countdown turns over on the minute, not at the next tick', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    answering(on, { input: 2, read: 70_000, written: 5_000, output: 500 })
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    await clock.advance(10_000)
+    await step($)
+    expect(await alt(desktop)).toContain('CACHE ~5m')
+    await clock.advance(3 * MIN - 200)
+    expect(await alt(desktop)).toContain('CACHE ~3m')
+    await clock.advance(400)
+    expect(await alt(desktop)).toContain('CACHE ~2m')
+  })
+
+  test('the cache tier is read again now and then: overage can drop it to 5m mid-session', async ($, on) => {
+    const clock = mock.clock(on, { now: NOW })
+    world(on)
+    answering(on, { input: 2, read: 70_000, written: 5_000, output: 500 })
+    const entry = (tier: '1h' | '5m') =>
+      JSON.stringify({ type: 'assistant', message: { usage: { cache_creation: { [`ephemeral_${tier}_input_tokens`]: 500 } } } })
+    let transcript = entry('1h')
+    on('fs.stat', () => ({ value: { kind: 'file' as const, size: transcript.length, mtimeMs: NOW, isLink: false } }))
+    on('fs.read', () => ({ value: transcript }))
+    const stop = () => $.classic.Stop({ session_id: 's', transcript_path: '/t/s.jsonl', cwd: '/work/my-repo', stop_hook_active: false })
+    await $.session.start({ cwd: '/work/my-repo', surface: 'terminal', isInteractive: true })
+    const desktop = await $.ui.mount({ plugin: 'hud', surface: 'desktop', component: 'AbovePrompt', props: BAND })
+    await step($)
+    await stop()
+    await clock.advance(MIN)
+    expect(await alt(desktop)).toContain('CACHE 59m')
+    // The tier changed, but a read so soon after the last is not due.
+    transcript = entry('5m')
+    await stop()
+    await clock.advance(100)
+    expect(await alt(desktop)).toContain('CACHE 59m')
+    await clock.advance(4 * MIN)
+    await step($, 1)
+    await stop()
+    await clock.advance(100)
+    expect(await alt(desktop)).toContain('CACHE 5m')
   })
 })
 

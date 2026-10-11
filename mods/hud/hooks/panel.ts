@@ -95,14 +95,16 @@ export function tokens(n: number): string {
   return `${(n / 1_000_000).toFixed(1).replace(/\.0$/, '')}M`
 }
 
-/** A countdown in whole minutes, rounded up: <1m, 14m, 2h05m, 3d4h. */
+/** A countdown rounded up to the unit it ends on, so it never reads short: <1m, 14m, 2h05m, 3d4h. */
 export function span(ms: number): string {
   if (ms < 60_000) return '<1m'
   const minutes = Math.ceil(ms / 60_000)
-  const days = Math.floor(minutes / 1440)
-  const hours = Math.floor((minutes % 1440) / 60)
+  if (minutes >= 1440) {
+    const hours = Math.ceil(minutes / 60)
+    return `${Math.floor(hours / 24)}d${hours % 24}h`
+  }
+  const hours = Math.floor(minutes / 60)
   const rest = minutes % 60
-  if (days > 0) return `${days}d${hours}h`
   if (hours > 0) return `${hours}h${String(rest).padStart(2, '0')}m`
   return `${rest}m`
 }
@@ -140,18 +142,23 @@ function projectLines(project: string | null, repo: HudRepo): Line[] {
  * How far auto-compaction is: `in 84k` once the context is measured, `at 160k`
  * before (right after a compaction), `auto off`, or `–` until the threshold is
  * read; `compacting…` while one runs, `queued` while the HUD's waits its turn.
+ *
+ * Auto-compaction counts what the next request sends: the context's input side
+ * and the last response's output (`resent`, the cache's re-cache tokens), so
+ * that is what the distance is taken from where the HUD has it.
  */
-function compactValue(usage: HudUsage, compact: HudCompact, level: Level, run: HudCompactRun): Span[] {
+function compactValue(usage: HudUsage, compact: HudCompact, level: Level, run: HudCompactRun, resent: number | null): Span[] {
   if (run === 'running') return [s('compacting…', 'warn', true)]
   if (run === 'queued') return [s('queued', 'warn', true), s(' · runs when idle', 'dim')]
   if (compact === null) return [s('–', 'dim')]
   if (compact.at === null) return [s('auto off', 'dim')]
   if (usage.tokens === null) return [s('at ', 'dim'), s(tokens(compact.at), 'value')]
-  return [s('in ', 'dim'), s(tokens(Math.max(0, compact.at - usage.tokens)), level === 'ok' ? 'value' : level)]
+  const used = Math.max(usage.tokens, resent ?? 0)
+  return [s('in ', 'dim'), s(tokens(Math.max(0, compact.at - used)), level === 'ok' ? 'value' : level)]
 }
 
 /** Context, and the compact line: it carries the compact control, so it shows whenever the window is known. */
-function contextLines(usage: HudUsage, compact: HudCompact, run: HudCompactRun): Line[] {
+function contextLines(usage: HudUsage, compact: HudCompact, run: HudCompactRun, resent: number | null): Line[] {
   if (usage.window <= 0) return []
   const percent = usage.tokens === null ? null : (usage.percent ?? Math.round((usage.tokens / usage.window) * 100))
   const level = percent === null ? 'ok' : levelAt(percent, 70, 85)
@@ -166,22 +173,21 @@ function contextLines(usage: HudUsage, compact: HudCompact, run: HudCompactRun):
           rank: KEEP,
           level,
         }
-  const value = compactValue(usage, compact, level, run)
+  const value = compactValue(usage, compact, level, run, resent)
   return [context, { key: 'compact', label: 'COMPACT', value, rank: RANK.compact, action: 'compact' }]
 }
 
 function limitLine(limit: HudLimit, now: number, isFirst: boolean): Line {
+  const label = LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase()
+  const rank = isFirst ? KEEP : RANK.laterLimit
+  // Past its reset the window started over: the last figure no longer holds, and the next response brings the new one.
+  if (limit.resetsAt !== null && limit.resetsAt <= now) {
+    return { key: limit.kind, label, gauge: { percent: 0, tone: 'ok' }, value: [s('reset', 'dim')], rank }
+  }
   const level = levelAt(limit.percent, 80, 95)
   const value = [s(`${Math.round(limit.percent)}%`, level, level !== 'ok')]
-  if (limit.resetsAt !== null && limit.resetsAt > now) value.push(s(` ↻${span(limit.resetsAt - now)}`, 'dim'))
-  return {
-    key: limit.kind,
-    label: LIMIT_LABELS[limit.kind] ?? limit.kind.toUpperCase(),
-    gauge: { percent: limit.percent, tone: level },
-    value,
-    rank: isFirst ? KEEP : RANK.laterLimit,
-    level,
-  }
+  if (limit.resetsAt !== null) value.push(s(` ↻${span(limit.resetsAt - now)}`, 'dim'))
+  return { key: limit.kind, label, gauge: { percent: limit.percent, tone: level }, value, rank, level }
 }
 
 function planLines(usage: HudUsage, now: number): Line[] {
@@ -222,7 +228,7 @@ export function buildPanel(v: View): Line[] {
   return [
     modelLine(v.model),
     ...projectLines(v.project, v.repo),
-    ...contextLines(v.usage, v.compact, v.compactRun ?? null),
+    ...contextLines(v.usage, v.compact, v.compactRun ?? null, v.cache.tokens),
     ...planLines(v.usage, v.now),
     cacheLine(v.cache, v.now),
     costLine(v.usage),

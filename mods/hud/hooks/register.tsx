@@ -54,6 +54,11 @@ const TICK_MS = 30_000
 const MAX_TRANSCRIPT_BYTES = 32 * 1024 * 1024
 /** Turn ends that look for a cache write before giving up for the session. */
 const MAX_TTL_SCANS = 3
+/**
+ * Once the tier is known, how often a turn's end reads it again: it can change
+ * mid-session (usage overage drops it to 5m), and the transcript is large.
+ */
+const TTL_RECHECK_MS = 5 * 60_000
 
 /** Tools after which the working tree may differ. */
 const MUTATING = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Bash'])
@@ -105,6 +110,9 @@ type Host = {
   pressCompact: () => Promise<void>
   /** A press on hide: hidden for this session. */
   hide: () => Promise<void>
+  /** The cache tier the transcript's latest main-thread cache write used, or null. */
+  transcriptTtl: (path: string) => Promise<HudCache['ttl'] | null>
+  setTtl: (ttl: HudCache['ttl']) => Promise<void>
 }
 
 function usageOf(u: { context: SessionContextUsage; rateLimits: readonly SessionRateLimit[]; cost?: SessionCost }): HudUsage {
@@ -184,7 +192,8 @@ export const register: Register = on => {
   let expiry: Timer | undefined
   const git = { isRunning: false, isQueued: false, lastAt: 0, timer: undefined as Timer | undefined }
   let projectName: { cwd: string; name: string } | undefined
-  let ttlScans = 0
+  /** Transcript reads for the cache tier: misses while it is unknown, and when the last read started. */
+  const ttlScan = { misses: 0, lastAt: Number.NEGATIVE_INFINITY, isRunning: false }
   // What the click layer over the desktop's screen reported, and whether the engine said it failed.
   const probe: HudProbe = { screen: null, layer: null, events: [], faults: [] }
   let isLayerBroken = false
@@ -228,14 +237,34 @@ export const register: Register = on => {
     })
   }
 
-  /** Redraws the countdown the moment the cache expires, not at the next tick. */
+  /**
+   * Redraws the cache countdown each time its whole minutes change and when it
+   * expires, not at the next tick: between ticks a countdown could otherwise
+   * read up to half a minute long.
+   */
   async function armExpiry(c: HudCache): Promise<void> {
     expiry?.cancel()
     expiry = undefined
     const h = host
     if (!h || c.lastRequestAt === null) return
     const left = c.lastRequestAt + TTL_MS[c.ttl] - (await h.now())
-    if (left > 0) expiry = h.after(left + 1_000, () => void h.bump().catch(() => {}))
+    if (left <= 0) return
+    const step = left % 60_000 || 60_000
+    expiry = h.after(step + 50, () => void h.bump().then(() => armExpiry(c)).catch(() => {}))
+  }
+
+  /** Reads the cache tier from the transcript off the turn's path; one read at a time. */
+  async function scanTtl(h: Host, path: string): Promise<void> {
+    if (ttlScan.isRunning) return
+    ttlScan.isRunning = true
+    try {
+      ttlScan.lastAt = await h.now()
+      const ttl = await h.transcriptTtl(path)
+      if (ttl) await h.setTtl(ttl)
+      else ttlScan.misses += 1
+    } finally {
+      ttlScan.isRunning = false
+    }
   }
 
   on('session.start', async ($, e, next) => {
@@ -286,6 +315,18 @@ export const register: Register = on => {
       hide: async () => {
         await update($, isHidden, () => true)
         $.ui.toast('HUD hidden for this session. /hud shows it again.')
+      },
+      transcriptTtl: async path => {
+        const stat = await $.fs.stat(path).catch(() => null)
+        if (stat?.kind !== 'file' || stat.size > MAX_TRANSCRIPT_BYTES) return null
+        return lastCacheTtl(await $.fs.read(path).catch(() => ''))
+      },
+      setTtl: async ttl => {
+        const was = await read($, cache)
+        if (was.isTtlKnown && was.ttl === ttl) return
+        await update($, cache, c => ({ ...c, ttl, isTtlKnown: true }))
+        await $.store.set(STORE_TTL, ttl)
+        await armExpiry(await read($, cache))
       },
     }
     // A reload leaves the session's state: a run it was waiting on is no one's now.
@@ -365,6 +406,9 @@ export const register: Register = on => {
     }
     const result = yield* next(e)
     if (e.agentId === undefined) {
+      // The engine measures after the turn; mid-turn, read the figures each response moved (local, no request).
+      const now = await $.session.usage().catch(() => null)
+      if (now) await update($, usage, () => usageOf(now))
       const used = result.usage
       if (used) {
         const sent = used.input_tokens + used.cache_read_input_tokens + used.cache_creation_input_tokens + used.output_tokens
@@ -417,6 +461,9 @@ export const register: Register = on => {
       if (isMain) {
         await update($, cache, c => ({ ...c, lastRequestAt: null, tokens: null }))
         await armExpiry(await read($, cache))
+        // The old fill no longer holds: the engine has none until the next response.
+        const now = await $.session.usage().catch(() => null)
+        if (now) await update($, usage, () => usageOf(now))
       }
       return result
     } finally {
@@ -444,20 +491,12 @@ export const register: Register = on => {
     return next(e)
   }).catch(($, e, next) => next(e))
 
-  // The cache tier is in the transcript only: read it at a turn's end, until found.
+  // The cache tier is in the transcript only: read it at a turn's end until found, then
+  // now and then again, since it can change mid-session. The read runs off the turn's path.
   on('classic.Stop', async ($, e, next) => {
-    if (ttlScans < MAX_TTL_SCANS && !(await read($, cache)).isTtlKnown && e.transcript_path) {
-      ttlScans += 1
-      const stat = await $.fs.stat(e.transcript_path).catch(() => null)
-      const text = stat?.kind === 'file' && stat.size <= MAX_TRANSCRIPT_BYTES ? await $.fs.read(e.transcript_path).catch(() => '') : ''
-      const ttl = lastCacheTtl(text)
-      if (ttl) {
-        ttlScans = MAX_TTL_SCANS
-        await update($, cache, c => ({ ...c, ttl, isTtlKnown: true }))
-        await $.store.set(STORE_TTL, ttl)
-        await armExpiry(await read($, cache))
-      }
-    }
+    const isKnown = (await read($, cache)).isTtlKnown
+    const isDue = isKnown ? (await $.clock.now()) - ttlScan.lastAt >= TTL_RECHECK_MS : ttlScan.misses < MAX_TTL_SCANS
+    if (isDue && e.transcript_path && host) void scanTtl(host, e.transcript_path).catch(() => {})
     return next(e)
   }).catch(($, e, next) => next(e))
 

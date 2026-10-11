@@ -87,11 +87,11 @@ one place, `PALETTE` in `hooks/panel.ts`:
 | --- | --- |
 | `MODEL` | The last main-thread request (`turn.step`) as it goes out, with its own effort (none shown when it sends none). No event reports a switch, so one made while Claude is idle shows with the next request. Before the first request, `$.session.model()` and `effortLevel` from settings. |
 | `PROJECT`, `BRANCH` with `±` uncommitted paths | The project is the repository root's name (the main tree's name for a worktree), else the directory's. The branch and count come from `git --no-optional-locks status --porcelain=v2 --branch`. |
-| `CONTEXT` | `$.session.usage()` and the `session.measure` pushes. |
-| `COMPACT` | The tokens left before auto-compaction (`in 594k`). The engine's own threshold comes from `usage({ breakdown: 'summary' })`, a local estimate that sends no request, read at load and again only when the window changes. Right after a compaction, before the context is measured again, it shows the threshold (`at 920k`); with auto-compaction off, `auto off`. The line always shows, since it carries the compact control. |
-| `5-HOUR`, `7-DAY` with the reset countdown | `usage().rateLimits`; absent off a subscription. |
+| `CONTEXT` | The last response's input side against the model's window, as the status line counts it: `$.session.usage()`, read after each main-thread response, and the `session.measure` pushes. Right after a compaction it has no figure until the next response. |
+| `COMPACT` | The tokens left before auto-compaction (`in 594k`), counted from what the next request sends: the context plus the last response's output, as auto-compaction counts it. The engine's own threshold comes from `usage({ breakdown: 'summary' })`, a local estimate that sends no request, read at load and again only when the window changes. Right after a compaction, before the context is measured again, it shows the threshold (`at 920k`); with auto-compaction off, `auto off`. The line always shows, since it carries the compact control. |
+| `5-HOUR`, `7-DAY` with the reset countdown | `usage().rateLimits`; absent off a subscription. Once a window's reset time passes it reads `reset`, since the old figure no longer holds; the next response brings the new one. |
 | `CACHE` | Derived (see below). |
-| `COST` | `usage().cost`, as `/cost` totals it. |
+| `COST` | `usage().cost`: every priced response of this session, as `/cost` totals it, read after each main-thread response. On a subscription it is what the tokens would cost at API prices, not a bill. |
 | `RUNNING` | The tools running now (`tool.call`), and `$.agent.list()` entries that are pending, running or waiting. Shown only while something runs. |
 
 When the terminal band has too few rows, lines drop in this order: running, cost, 7-day, branch,
@@ -100,13 +100,17 @@ and the first plan window always stay.
 
 ### Derived rather than reported
 
-- **Cache clock.** It restarts at each main-thread request and runs for the TTL of the cache tier.
-  The mod API reports cache tokens but not their tier (5m or 1h), so at the end of each turn the HUD
-  reads the session transcript and stops after the first cache write it finds (three tries at most
-  per session; transcripts over 32 MB are skipped). The tier is kept in the mod's store as the next
-  session's first guess. A `~` before the countdown marks a guess.
+- **Cache clock.** It restarts as each main-thread request goes out and runs for the TTL of the
+  cache tier. It rounds up to the whole minute and redraws the moment the minute turns over. The
+  mod API reports cache tokens but not their tier (5m or 1h), so at the end of a turn the HUD reads
+  the session transcript for the latest cache write, in the background: until it finds one (three
+  tries at most), then again at most every 5 minutes, since the tier can change mid-session (usage
+  overage drops it to 5m). Transcripts over 32 MB are skipped. The tier is kept in the mod's store
+  as the next session's first guess. A `~` before the countdown marks a guess.
 - **Re-cache tokens.** The last request's input, cache-read, cache-write and output tokens: the
   prompt the next request sends again.
+- **Countdowns** round up to the unit they end on (`3d2h` for 3 days 1 hour 45 minutes), so they
+  never read short.
 - **Resumed session.** `classic.SessionStart` reports how long ago the session last answered and
   whether that outlived the cache. The HUD therefore shows the expired cache at once, without reading
   the transcript.
@@ -119,6 +123,11 @@ and the first plan window always stay.
   both from the next request Claude sends, so after a switch it shows the old values until Claude
   starts working again. The model alone could be polled, but then a switch would show the new model
   beside the old effort, so the HUD keeps both on the request.
+- **The cache clock counts the main thread's requests only.** A background request on the same
+  conversation, such as a compaction summary prepared ahead of time, also keeps the cache warm, so
+  the HUD can read `expired` a little early. The other way round, a change to the prompt's start
+  (a `CLAUDE.md` edit, an MCP server connecting) makes the next request miss the cache while the
+  clock still runs.
 - **`/hud` waits during a compaction.** Claude Code holds every slash command until a compaction
   ends. `✕ HIDE` on the screen still works then, since it is not a command.
 
@@ -142,7 +151,8 @@ app too, where `/config` isn't available.
 
 - **Reads.** `$.session` (usage, model, cwd, repository root, attached surfaces), `$.settings`
   (`effortLevel` only), `$.agent.list()`, and the session transcript (`classic.Stop`'s
-  `transcript_path`), read for the cache tier as described above.
+  `transcript_path`), read for the cache tier as described above: at most every 5 minutes once the
+  tier is known.
 - **Runs.** One command: `git --no-optional-locks status --porcelain=v2 --branch`, in the session's
   directory, with a 5-second timeout. `--no-optional-locks` keeps git from refreshing the index, so
   the run writes nothing. It runs at session start, at the start of each turn, and after an `Edit`,
