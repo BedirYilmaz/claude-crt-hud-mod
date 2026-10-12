@@ -15,11 +15,21 @@ lives in `mods/<name>/` and is listed in `.claude-plugin/marketplace.json`.
 
 ## Install
 
-In Claude Code:
+From a terminal:
+
+```sh
+claude plugin marketplace add BedirYilmaz/claude-crt-hud-mod
+claude plugin install hud@claude-mods
+```
+
+Or in Claude Code:
 
 ```
 /plugin install hud --marketplace BedirYilmaz/claude-crt-hud-mod
 ```
+
+The HUD shows from the next session on. It is a mod (a plugin of hook modules), built and tested on
+Claude Code 2.1.293; a version without mods does not load it.
 
 From a clone:
 

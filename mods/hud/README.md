@@ -52,6 +52,16 @@ between them. The panel takes the full width of the band (or of the prompt, belo
 The header shows `● WORKING` (blinking amber) while a turn runs, `◌ COMPACTING` or
 `◌ COMPACT QUEUED` while a compaction runs or waits, and `○ IDLE` otherwise.
 
+### Install
+
+```sh
+claude plugin marketplace add BedirYilmaz/claude-crt-hud-mod
+claude plugin install hud@claude-mods
+```
+
+It shows from the next session on; `/hud` turns it on or off. See the
+[repository's README](../../README.md#install) for the other ways in.
+
 ### Compact, minimal and hide
 
 - **Compact:** `COMPACT ▸` in the desktop screen's header, or the `COMPACT ▸` label on the
